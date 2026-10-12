@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="ad.size" content="width=320,height=480">
+<title>Wild Camp</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#4f8a3c}
+#stage{position:fixed;inset:0}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+window.TF_STORE_URL = "https://play.google.com/store/apps";
+/* Tapframe playable template — top-down survival loop ("Wild Camp" concept):
+   chop trees -> carry logs -> light the fire -> grill the meat.
+   Drag anywhere = virtual joystick. Pure Canvas 2D. Mount: TapframeWild.mount(element) */
+(function () {
+  'use strict';
+
+  var CONFIG = {
+    storeUrl: window.TF_STORE_URL || 'https://play.google.com/store/apps',
+    title: 'Wild Camp',
+    endTitle: 'Chop. Cook. Survive.',
+    ctaText: 'PLAY FREE',
+    maxTime: 45,
+    hintDelay: 2.5
+  };
+
+  var DW = 360, DH = 640;
+  var LOGS_NEEDED = 6, SPEED = 150, REACH = 44;
+  var FIRE = { x: 180, y: 470 };
+  var MIN_Y = 118, MAX_Y = 568;
+
+  function makeTrees() {
+    return [
+      { x: 84, y: 200, hp: 3, shake: 0 }, { x: 272, y: 182, hp: 3, shake: 0 },
+      { x: 118, y: 330, hp: 3, shake: 0 }, { x: 282, y: 338, hp: 3, shake: 0 },
+      { x: 40, y: 430, hp: 3, shake: 0 }, { x: 322, y: 470, hp: 3, shake: 0 }
+    ];
+  }
+
+  function track(name) { try { if (window.TF_event) window.TF_event(name); } catch (e) {} }
+
+  function openStore() {
+    track('cta');
+    try {
+      if (window.FbPlayableAd) { window.FbPlayableAd.onCTAClick(); return true; }
+      if (window.ExitApi) { window.ExitApi.exit(); return true; }
+      if (window.mraid && window.mraid.open) { window.mraid.open(CONFIG.storeUrl); return true; }
+    } catch (e) {}
+    var w = null;
+    try { w = window.open(CONFIG.storeUrl, '_blank'); } catch (e) {}
+    return !!w;
+  }
+
+  function mount(host) {
+    var canvas = document.createElement('canvas');
+    canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none';
+    host.appendChild(canvas);
+    var ctx = canvas.getContext('2d');
+
+    var W = 0, H = 0, dpr = 1, S = 1, ox = 0, oy = 0;
+    var trees = makeTrees();
+    var player = { x: 180, y: 560, dx: 0, dy: -1, chop: 0, swing: 0 };
+    var carried = 0, fireLogs = 0, fireLit = false, cook = 0, cooked = false;
+    var flying = [], particles = [], floaters = [], grass = [];
+    var stick = null, phase = 'play', phaseT = 0, time = 0, idle = 0, interacted = false, toast = null;
+
+    for (var i = 0; i < 60; i++) grass.push({ x: Math.random() * DW, y: 110 + Math.random() * 480, s: Math.random() * 0.6 + 0.6 });
+
+    function resize() {
+      var r = host.getBoundingClientRect();
+      W = Math.max(200, r.width); H = Math.max(300, r.height);
+      dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      S = Math.min(W / DW, H / DH); ox = (W - DW * S) / 2; oy = (H - DH * S) / 2;
+    }
+
+    function task() {
+      if (cooked) return { text: 'Steak ready!', target: null };
+      if (!fireLit && carried + fireLogs < LOGS_NEEDED) {
+        var t = nearestTree(); return { text: 'Chop wood  ' + (carried + fireLogs) + '/' + LOGS_NEEDED, target: t };
+      }
+      if (!fireLit) return { text: 'Bring wood to the fire', target: FIRE };
+      return { text: 'Grill the meat', target: FIRE };
+    }
+
+    function nearestTree() {
+      var best = null, bd = 1e9;
+      for (var i = 0; i < trees.length; i++) {
+        var t = trees[i]; if (t.hp <= 0) continue;
+        var d = (t.x - player.x) * (t.x - player.x) + (t.y - player.y) * (t.y - player.y);
+        if (d < bd) { bd = d; best = t; }
+      }
+      return best;
+    }
+
+    // ---------- input ----------
+    function toDesign(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left - ox) / S, y: (e.clientY - r.top - oy) / S };
+    }
+    var ctaR = { x: 105, y: 590, w: 150, h: 40 };
+    function inR(p, R) { return p.x >= R.x && p.x <= R.x + R.w && p.y >= R.y && p.y <= R.y + R.h; }
+    function cta() { if (!openStore()) toast = { text: 'In the ad, this opens the store', life: 2.2 }; }
+
+    canvas.addEventListener('pointerdown', function (e) {
+      var p = toDesign(e); idle = 0;
+      if (!interacted) { interacted = true; track('first_interaction'); }
+      if (phase === 'end') { cta(); return; }
+      if (inR(p, ctaR)) { cta(); return; }
+      stick = { ox: p.x, oy: p.y, x: p.x, y: p.y };
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+    canvas.addEventListener('pointermove', function (e) {
+      if (!stick) return; var p = toDesign(e); stick.x = p.x; stick.y = p.y; idle = 0;
+    });
+    function end() { stick = null; }
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+
+    // ---------- simulation ----------
+    function burst(x, y, c, n, sp) {
+      for (var k = 0; k < n; k++) {
+        var a = Math.random() * 6.29, v = Math.random() * sp + sp * 0.3;
+        particles.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, c: c, s: Math.random() * 2.5 + 1.5, g: 0 });
+      }
+    }
+
+    function update(dt) {
+      if (phase !== 'play') return;
+      var mx = 0, my = 0;
+      if (stick) {
+        var dx = stick.x - stick.ox, dy = stick.y - stick.oy, d = Math.sqrt(dx * dx + dy * dy);
+        if (d > 6) { mx = dx / d * Math.min(1, d / 40); my = dy / d * Math.min(1, d / 40); }
+      }
+      if (mx || my) { player.dx = mx; player.dy = my; }
+      player.x += mx * SPEED * dt; player.y += my * SPEED * dt;
+      player.x = Math.max(18, Math.min(DW - 18, player.x)); player.y = Math.max(MIN_Y, Math.min(MAX_Y, player.y));
+      // trunks and fire ring are solid
+      for (var i = 0; i < trees.length; i++) {
+        var t = trees[i]; if (t.hp <= 0) continue;
+        var ex = player.x - t.x, ey = player.y - t.y, ed = Math.sqrt(ex * ex + ey * ey);
+        if (ed < 30 && ed > 0) { player.x = t.x + ex / ed * 30; player.y = t.y + ey / ed * 30; }
+      }
+      var fx = player.x - FIRE.x, fy = player.y - FIRE.y, fd = Math.sqrt(fx * fx + fy * fy);
+      if (fd < 34 && fd > 0) { player.x = FIRE.x + fx / fd * 34; player.y = FIRE.y + fy / fd * 34; }
+
+      // chop the nearest tree in reach
+      player.swing = Math.max(0, player.swing - dt * 4);
+      var tree = nearestTree(), moving = !!(mx || my);
+      var canCarry = carried + fireLogs < LOGS_NEEDED && !fireLit;
+      if (tree && canCarry && Math.hypot(tree.x - player.x, tree.y - player.y) < REACH) {
+        player.chop += dt;
+        if (player.chop > 0.38) {
+          player.chop = 0; player.swing = 1; tree.hp--; tree.shake = 1;
+          burst(tree.x, tree.y + 10, '#c9935a', 8, 70);
+          if (tree.hp <= 0) {
+            burst(tree.x, tree.y, '#3f8f3a', 22, 110); track('tree_down');
+            for (var k = 0; k < 3 && carried + fireLogs < LOGS_NEEDED; k++) {
+              carried++;
+              flying.push({ x: tree.x, y: tree.y, tx: 'player', idx: carried - 1, t: -k * 0.12 });
+            }
+          }
+        }
+      } else player.chop = Math.min(player.chop, 0.2);
+
+      // deliver logs to the fire
+      if (!fireLit && carried > 0 && fd < 60) {
+        player.chop += dt * 0; // no-op, keeps the stride
+        if (!player.drop || time - player.drop > 0.12) {
+          player.drop = time; carried--; fireLogs++;
+          flying.push({ x: player.x, y: player.y - 30, tx: 'fire', t: 0 });
+          if (fireLogs >= LOGS_NEEDED) {
+            fireLit = true; track('fire_lit');
+            floaters.push({ x: FIRE.x, y: FIRE.y - 50, text: 'Fire lit!', life: 1.4, c: '#ffb13b' });
+            burst(FIRE.x, FIRE.y, '#ffb13b', 30, 120);
+          }
+        }
+      }
+
+      // grill
+      if (fireLit && !cooked && fd < 62) {
+        cook += dt / 2.6;
+        if (Math.random() < dt * 12) particles.push({ x: FIRE.x + (Math.random() - 0.5) * 24, y: FIRE.y - 16, vx: (Math.random() - 0.5) * 10, vy: -40, life: 1, c: 'rgba(230,230,230,0.3)', s: 2.5 + Math.random() * 2, g: -1 });
+        if (cook >= 1) {
+          cooked = true; cook = 1; track('cooked');
+          floaters.push({ x: FIRE.x, y: FIRE.y - 60, text: '+ Grilled steak', life: 1.4, c: '#ffd27a' });
+          burst(FIRE.x, FIRE.y - 20, '#ffd27a', 40, 140);
+          phase = 'win'; phaseT = 0;
+        }
+      }
+      for (i = 0; i < trees.length; i++) trees[i].shake = Math.max(0, trees[i].shake - dt * 5);
+    }
+
+    // ---------- drawing ----------
+    function rr(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+
+    function drawGround() {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#4f8a3c'; ctx.fillRect(0, 0, W, H);
+      ctx.setTransform(dpr * S, 0, 0, dpr * S, dpr * ox, dpr * oy);
+      ctx.fillStyle = '#5a9645';
+      for (var y = 0; y < DH; y += 32) for (var x = (y / 32) % 2 * 32; x < DW; x += 64) ctx.fillRect(x, y, 32, 32);
+      ctx.strokeStyle = 'rgba(30,70,20,0.35)'; ctx.lineWidth = 2;
+      for (var i = 0; i < grass.length; i++) {
+        var g = grass[i]; ctx.beginPath();
+        ctx.moveTo(g.x, g.y); ctx.lineTo(g.x - 2 * g.s, g.y - 6 * g.s); ctx.moveTo(g.x, g.y); ctx.lineTo(g.x + 2 * g.s, g.y - 6 * g.s); ctx.stroke();
+      }
+      // dirt clearing around the fire
+      ctx.fillStyle = '#a07a4c'; ctx.beginPath(); ctx.ellipse(FIRE.x, FIRE.y, 74, 56, 0, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#b58b58'; ctx.beginPath(); ctx.ellipse(FIRE.x, FIRE.y, 60, 44, 0, 0, 6.29); ctx.fill();
+    }
+
+    function log(x, y, rot, s) {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(rot || 0); s = s || 1;
+      ctx.fillStyle = '#8a5a2b'; rr(-13 * s, -4.5 * s, 26 * s, 9 * s, 4 * s); ctx.fill();
+      ctx.fillStyle = '#e2b77a'; ctx.beginPath(); ctx.ellipse(13 * s, 0, 3 * s, 4.5 * s, 0, 0, 6.29); ctx.fill();
+      ctx.strokeStyle = '#5e3b17'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-9 * s, -1); ctx.lineTo(6 * s, -1); ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawTree(t) {
+      if (t.hp <= 0) {
+        ctx.fillStyle = '#6e4a24'; ctx.beginPath(); ctx.ellipse(t.x, t.y + 6, 13, 9, 0, 0, 6.29); ctx.fill();
+        ctx.fillStyle = '#d7aa6c'; ctx.beginPath(); ctx.ellipse(t.x, t.y + 4, 10, 6.5, 0, 0, 6.29); ctx.fill();
+        return;
+      }
+      var sx = Math.sin(time * 60) * 3 * t.shake;
+      ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath(); ctx.ellipse(t.x + 6, t.y + 12, 34, 22, 0, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#6e4a24'; ctx.beginPath(); ctx.ellipse(t.x, t.y + 8, 9, 7, 0, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#2f6e2c'; ctx.beginPath(); ctx.arc(t.x + sx, t.y - 6, 32, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#3f8f3a'; ctx.beginPath(); ctx.arc(t.x - 6 + sx, t.y - 12, 24, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#5bb04f'; ctx.beginPath(); ctx.arc(t.x - 12 + sx, t.y - 18, 11, 0, 6.29); ctx.fill();
+      if (t.hp < 3) {
+        ctx.fillStyle = 'rgba(0,0,0,0.45)'; rr(t.x - 18, t.y - 50, 36, 6, 3); ctx.fill();
+        ctx.fillStyle = '#ffd84d'; rr(t.x - 18, t.y - 50, 36 * t.hp / 3, 6, 3); ctx.fill();
+      }
+    }
+
+    function drawFire() {
+      for (var k = 0; k < 9; k++) {
+        var a = k / 9 * 6.29;
+        ctx.fillStyle = k % 2 ? '#8b8f99' : '#a6abb5';
+        ctx.beginPath(); ctx.ellipse(FIRE.x + Math.cos(a) * 26, FIRE.y + Math.sin(a) * 18, 8, 6, a, 0, 6.29); ctx.fill();
+      }
+      var shown = Math.min(fireLogs, LOGS_NEEDED);
+      for (k = 0; k < shown; k++) log(FIRE.x + Math.cos(k * 1.05) * 6, FIRE.y + Math.sin(k * 1.05) * 4, k * 1.05, 0.8);
+      if (fireLit) {
+        for (k = 0; k < 3; k++) {
+          var fl = Math.sin(time * 12 + k * 2) * 3, h = 26 + k * -6 + fl;
+          ctx.fillStyle = ['#ff6a1a', '#ffa22b', '#ffe06b'][k];
+          ctx.beginPath(); ctx.moveTo(FIRE.x - 14 + k * 4, FIRE.y);
+          ctx.quadraticCurveTo(FIRE.x, FIRE.y - h * 1.6, FIRE.x + 14 - k * 4, FIRE.y); ctx.fill();
+        }
+        // grill grate + steak
+        ctx.strokeStyle = '#3a3a40'; ctx.lineWidth = 2.5;
+        for (k = -2; k <= 2; k++) { ctx.beginPath(); ctx.moveTo(FIRE.x - 26, FIRE.y - 18 + k * 5); ctx.lineTo(FIRE.x + 26, FIRE.y - 18 + k * 5); ctx.stroke(); }
+        var c = cook, r = Math.round(196 - 90 * c), g = Math.round(64 + 10 * c), b = Math.round(70 - 40 * c);
+        ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+        ctx.beginPath(); ctx.ellipse(FIRE.x, FIRE.y - 18, 17, 11, -0.2, 0, 6.29); ctx.fill();
+        ctx.fillStyle = 'rgba(255,240,220,0.85)'; ctx.beginPath(); ctx.ellipse(FIRE.x + 8, FIRE.y - 20, 4.5, 3, 0, 0, 6.29); ctx.fill();
+        if (c > 0.3) { ctx.strokeStyle = 'rgba(40,20,10,' + (c * 0.8).toFixed(2) + ')'; ctx.lineWidth = 2;
+          for (k = -1; k <= 1; k++) { ctx.beginPath(); ctx.moveTo(FIRE.x - 10, FIRE.y - 22 + k * 5); ctx.lineTo(FIRE.x + 6, FIRE.y - 16 + k * 5); ctx.stroke(); } }
+        if (!cooked && cook > 0) {
+          ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(FIRE.x, FIRE.y - 60, 14, 0, 6.29); ctx.stroke();
+          ctx.strokeStyle = '#ffd84d'; ctx.beginPath(); ctx.arc(FIRE.x, FIRE.y - 60, 14, -Math.PI / 2, -Math.PI / 2 + cook * 6.29); ctx.stroke();
+        }
+      }
+    }
+
+    function drawPlayer() {
+      var x = player.x, y = player.y, ang = Math.atan2(player.dy, player.dx);
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(x + 3, y + 8, 16, 10, 0, 0, 6.29); ctx.fill();
+      ctx.save(); ctx.translate(x, y); ctx.rotate(ang + Math.PI / 2);
+      var walk = stick ? Math.sin(time * 14) * 4 : 0;
+      // axe arm swings during chops
+      var sw = player.swing * 1.6;
+      ctx.save(); ctx.translate(12, -2); ctx.rotate(-0.4 - sw);
+      ctx.fillStyle = '#7a4f24'; rr(-2, -24, 4, 24, 2); ctx.fill();
+      ctx.fillStyle = '#c7ccd6'; ctx.beginPath(); ctx.moveTo(2, -24); ctx.lineTo(12, -28); ctx.lineTo(12, -16); ctx.lineTo(2, -18); ctx.fill();
+      ctx.restore();
+      ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.ellipse(0, 0, 15, 11, 0, 0, 6.29); ctx.fill(); // shirt
+      ctx.fillStyle = '#e9b48a'; ctx.beginPath(); ctx.arc(-13, walk * 0.5, 4.5, 0, 6.29); ctx.arc(13, -walk * 0.5, 4.5, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#5b3a1e'; ctx.beginPath(); ctx.arc(0, 0, 9, 0, 6.29); ctx.fill(); // hair (top of head)
+      ctx.fillStyle = '#e9b48a'; ctx.beginPath(); ctx.arc(0, -5, 5, Math.PI, 0); ctx.fill(); // face edge
+      ctx.restore();
+      // log stack on the back (drawn upright for readability)
+      for (var k = 0; k < carried; k++) log(x, y - 22 - k * 7, 0, 0.75);
+    }
+
+    function drawFlying(dt) {
+      for (var i = flying.length - 1; i >= 0; i--) {
+        var f = flying[i]; f.t += dt * 2.6; if (f.t < 0) continue;
+        var tx = f.tx === 'fire' ? FIRE.x : player.x, ty = f.tx === 'fire' ? FIRE.y : player.y - 22 - (f.idx || 0) * 7;
+        var k = Math.min(1, f.t), e = k * k * (3 - 2 * k);
+        var x = f.x + (tx - f.x) * e, y = f.y + (ty - f.y) * e - Math.sin(k * Math.PI) * 40;
+        log(x, y, k * 6, 0.8);
+        if (k >= 1) flying.splice(i, 1);
+      }
+    }
+
+    function drawPointer(tk) {
+      var t = tk.target; if (!t || phase !== 'play') return;
+      var dx = t.x - player.x, dy = t.y - player.y, d = Math.sqrt(dx * dx + dy * dy);
+      var pulse = 1 + Math.sin(time * 6) * 0.08;
+      ctx.strokeStyle = 'rgba(255,230,90,0.9)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.ellipse(t.x, t.y + 10, 38 * pulse, 26 * pulse, 0, 0, 6.29); ctx.stroke();
+      if (d < 70) return;
+      var a = Math.atan2(dy, dx), px = player.x + Math.cos(a) * 34, py = player.y + Math.sin(a) * 34;
+      ctx.save(); ctx.translate(px, py); ctx.rotate(a);
+      ctx.fillStyle = '#ffe45a'; ctx.strokeStyle = '#3a2b00'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-6, -9); ctx.lineTo(-2, 0); ctx.lineTo(-6, 9); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawHand(tk) {
+      if (phase !== 'play' || stick || (interacted && idle < CONFIG.hintDelay) || !tk.target) return;
+      var a = Math.atan2(tk.target.y - player.y, tk.target.x - player.x);
+      var cx = 180, cy = 520, k = (time % 1.4) / 1.4, e = Math.min(1, k / 0.6);
+      var x = cx + Math.cos(a) * 40 * e, y = cy + Math.sin(a) * 40 * e;
+      ctx.save(); ctx.globalAlpha = k > 0.8 ? 1 - (k - 0.8) / 0.2 : 0.95;
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, 30, 0, 6.29); ctx.stroke();
+      ctx.translate(x + 6, y + 10); ctx.rotate(-0.4);
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#1f2a14'; ctx.lineWidth = 2.5;
+      rr(-5, -14, 10, 24, 5); ctx.fill(); ctx.stroke(); rr(-11, 2, 22, 17, 7); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawStick() {
+      if (!stick) return;
+      var dx = stick.x - stick.ox, dy = stick.y - stick.oy, d = Math.sqrt(dx * dx + dy * dy), m = Math.min(d, 40);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.beginPath(); ctx.arc(stick.ox, stick.oy, 40, 0, 6.29); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.beginPath(); ctx.arc(stick.ox + (d ? dx / d * m : 0), stick.oy + (d ? dy / d * m : 0), 18, 0, 6.29); ctx.fill();
+    }
+
+    function drawFx(dt) {
+      for (var i = particles.length - 1; i >= 0; i--) {
+        var p = particles[i]; p.life -= dt * 1.4; if (p.life <= 0) { particles.splice(i, 1); continue; }
+        p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.g ? p.vy : p.vy * 0.96;
+        ctx.globalAlpha = p.life; ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, p.s * (p.g ? 2 - p.life : 1), 0, 6.29); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      for (i = floaters.length - 1; i >= 0; i--) {
+        var f = floaters[i]; f.life -= dt; f.y -= dt * 30; if (f.life <= 0) { floaters.splice(i, 1); continue; }
+        ctx.globalAlpha = Math.min(1, f.life * 2); text(f.text, f.x, f.y, 20, f.c);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function text(str, x, y, size, color, weight) {
+      ctx.font = (weight || 900) + ' ' + size + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(3, size * 0.18); ctx.strokeStyle = '#1d2a12'; ctx.strokeText(str, x, y);
+      ctx.fillStyle = color; ctx.fillText(str, x, y);
+    }
+
+    function button(R, label, pulse) {
+      var s = 1 + (pulse ? Math.sin(time * 5) * 0.04 : 0), w = R.w * s, h = R.h * s, x = R.x - (w - R.w) / 2, y = R.y - (h - R.h) / 2;
+      ctx.fillStyle = '#8a3b00'; rr(x, y + 4, w, h, h / 2); ctx.fill();
+      var g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#ffb340'); g.addColorStop(1, '#f06a10');
+      ctx.fillStyle = g; rr(x, y, w, h, h / 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '900 ' + Math.round(h * 0.45) + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+    }
+
+    function drawUi(tk) {
+      ctx.fillStyle = 'rgba(20,40,14,0.55)'; ctx.fillRect(-ox / S, 0, W / S, 100);
+      text(CONFIG.title.toUpperCase(), DW / 2, 34, 30, '#ffffff');
+      text(tk.text, DW / 2, 72, 18, '#ffe45a', 800);
+      // three-step checklist
+      var steps = [carried + fireLogs >= LOGS_NEEDED || fireLit, fireLit, cooked];
+      for (var k = 0; k < 3; k++) {
+        ctx.fillStyle = steps[k] ? '#ffe45a' : 'rgba(255,255,255,0.3)';
+        rr(DW / 2 - 51 + k * 36, 90, 30, 5, 2.5); ctx.fill();
+      }
+      if (phase !== 'end') button(ctaR, 'INSTALL', false);
+    }
+
+    function drawEnd() {
+      var a = Math.min(1, phaseT * 2.5);
+      ctx.fillStyle = 'rgba(10,18,6,' + (0.84 * a).toFixed(3) + ')'; ctx.fillRect(-ox / S, -oy / S, W / S, H / S);
+      ctx.globalAlpha = a;
+      ctx.save(); ctx.translate(DW / 2, 230); ctx.rotate(time * 0.4);
+      for (var k = 0; k < 12; k++) {
+        ctx.rotate(Math.PI / 6); ctx.fillStyle = 'rgba(255,170,60,0.08)';
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-22, -190); ctx.lineTo(22, -190); ctx.fill();
+      }
+      ctx.restore();
+      var cy = 230 + Math.sin(time * 2) * 4;
+      ctx.fillStyle = '#f2f2f2'; ctx.beginPath(); ctx.ellipse(DW / 2, cy + 8, 88, 30, 0, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#7a3c1c'; ctx.beginPath(); ctx.ellipse(DW / 2, cy, 64, 38, -0.15, 0, 6.29); ctx.fill();
+      ctx.strokeStyle = '#3f1d0a'; ctx.lineWidth = 5;
+      for (k = -2; k <= 2; k++) { ctx.beginPath(); ctx.moveTo(DW / 2 - 40, cy - 10 + k * 10); ctx.lineTo(DW / 2 + 28, cy + 6 + k * 10); ctx.stroke(); }
+      ctx.fillStyle = '#fff1dd'; ctx.beginPath(); ctx.ellipse(DW / 2 + 32, cy - 6, 12, 8, 0, 0, 6.29); ctx.fill();
+      text(CONFIG.title.toUpperCase(), DW / 2, 360, 40, '#ffffff');
+      text(CONFIG.endTitle, DW / 2, 400, 18, '#ffe45a', 800);
+      button({ x: 80, y: 450, w: 200, h: 58 }, CONFIG.ctaText, true);
+      ctx.globalAlpha = 1;
+    }
+
+    function drawToast(dt) {
+      if (!toast) return; toast.life -= dt; if (toast.life <= 0) { toast = null; return; }
+      ctx.globalAlpha = Math.min(1, toast.life * 2);
+      ctx.font = '600 13px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      var w = ctx.measureText(toast.text).width + 26;
+      ctx.fillStyle = 'rgba(0,0,0,0.78)'; rr((DW - w) / 2, 548, w, 30, 15); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(toast.text, DW / 2, 563);
+      ctx.globalAlpha = 1;
+    }
+
+    var last = 0;
+    function frame(ts) {
+      var dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      time += dt; idle += dt; phaseT += dt;
+      update(dt);
+      if (phase === 'win' && phaseT > 1.5) { phase = 'end'; phaseT = 0; track('endcard'); }
+      if (phase === 'play' && time > CONFIG.maxTime) { phase = 'end'; phaseT = 0; track('timeout'); }
+      var tk = task();
+
+      drawGround();
+      // y-sort trees, fire and player so the hero walks behind canopies and the grill correctly
+      var list = trees.map(function (t) { return { y: t.y, f: function () { drawTree(t); } }; });
+      list.push({ y: player.y, f: drawPlayer });
+      list.push({ y: FIRE.y - 30, f: drawFire });
+      list.sort(function (a, b) { return a.y - b.y; });
+      for (var i = 0; i < list.length; i++) list[i].f();
+      drawFlying(dt);
+      drawPointer(tk);
+      drawFx(dt);
+      drawUi(tk);
+      drawHand(tk);
+      drawStick();
+      if (phase === 'end') drawEnd();
+      drawToast(dt);
+      requestAnimationFrame(frame);
+    }
+
+    if (window.TF_DEBUG) window.TF_DEBUG.wild = function () {
+      return { px: player.x, py: player.y, carried: carried, fireLogs: fireLogs, fireLit: fireLit, cook: cook, phase: phase, S: S, ox: ox, oy: oy,
+        target: (function () { var t = task().target; return t ? { x: t.x, y: t.y } : null; })() };
+    };
+    resize();
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(host);
+    window.addEventListener('resize', resize);
+    track('start');
+    requestAnimationFrame(frame);
+  }
+
+  function boot(host) {
+    var m = window.mraid;
+    if (m && m.getState && m.getState() === 'loading') m.addEventListener('ready', function () { mount(host); });
+    else mount(host);
+  }
+
+  window.TapframeWild = { mount: boot, config: CONFIG };
+})();
+
+TapframeWild.mount(document.getElementById('stage'));
+</script>
+</body>
+</html>

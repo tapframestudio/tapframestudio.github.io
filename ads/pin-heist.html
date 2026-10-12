@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="ad.size" content="width=320,height=480">
+<title>Pin Heist</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0d1424}
+#stage{position:fixed;inset:0}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+window.TF_STORE_URL = "https://play.google.com/store/apps";
+/* Tapframe playable template — pull-the-pin mechanic ("Pin Heist" concept).
+   Pure Canvas 2D, simple ball physics, no dependencies. Mount: TapframePins.mount(element) */
+(function () {
+  'use strict';
+
+  var CONFIG = {
+    storeUrl: window.TF_STORE_URL || 'https://play.google.com/store/apps',
+    title: 'Pin Heist',
+    prompt: 'Pull the right pin!',
+    endTitle: 'Save the hero. Grab the gold.',
+    ctaText: 'PLAY FREE',
+    maxTime: 40,
+    hintDelay: 3
+  };
+
+  // Design space: 360 x 640, letterboxed into any screen.
+  var DW = 360, DH = 640;
+  var BALL_R = 7, WALL = 5, GRAV = 900;
+  var HERO = { x: 180, y: 531, r: 26 };
+
+  var WALLS = [
+    // gold tube
+    [150, 120, 150, 330], [290, 120, 290, 330],
+    // funnel under gold
+    [150, 330, 196, 410], [290, 330, 244, 410],
+    // lava tube
+    [40, 190, 40, 380], [120, 190, 120, 380],
+    // room
+    [16, 430, 16, 505], [344, 430, 344, 505],
+    [16, 505, 180, 565], [180, 565, 344, 505]
+  ];
+
+  function makePins() {
+    return [
+      { id: 'gold', seg: [146, 330, 294, 330], handle: { x: 316, y: 330 }, dir: 1, out: 0, pulled: false, correct: true },
+      { id: 'lava', seg: [36, 380, 124, 380], handle: { x: 16, y: 380 }, dir: -1, out: 0, pulled: false, correct: false }
+    ];
+  }
+
+  function makeBalls() {
+    var b = [], x, y;
+    for (y = 0; y < 3; y++) for (x = 0; x < 9; x++)
+      b.push({ x: 160 + x * 15 + (y % 2) * 6, y: 316 - y * 14, vx: 0, vy: 0, kind: 'gold' });
+    for (y = 0; y < 5; y++) for (x = 0; x < 5; x++)
+      b.push({ x: 52 + x * 15 + (y % 2) * 3, y: 366 - y * 14, vx: 0, vy: 0, kind: 'lava' });
+    return b;
+  }
+
+  function track(name) { try { if (window.TF_event) window.TF_event(name); } catch (e) {} }
+
+  function openStore() {
+    track('cta');
+    try {
+      if (window.FbPlayableAd) { window.FbPlayableAd.onCTAClick(); return true; }
+      if (window.ExitApi) { window.ExitApi.exit(); return true; }
+      if (window.mraid && window.mraid.open) { window.mraid.open(CONFIG.storeUrl); return true; }
+    } catch (e) {}
+    var w = null;
+    try { w = window.open(CONFIG.storeUrl, '_blank'); } catch (e) {}
+    return !!w;
+  }
+
+  function mount(host) {
+    var canvas = document.createElement('canvas');
+    canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none';
+    host.appendChild(canvas);
+    var ctx = canvas.getContext('2d');
+
+    var W = 0, H = 0, dpr = 1, S = 1, ox = 0, oy = 0;
+    var balls, pins, phase, phaseT, time = 0, idle = 0, interacted = false, fails = 0, goldIn = 0, toast = null;
+    var particles = [];
+
+    function reset() {
+      balls = makeBalls(); pins = makePins(); phase = 'play'; phaseT = 0; goldIn = 0;
+    }
+    reset();
+
+    function resize() {
+      var r = host.getBoundingClientRect();
+      W = Math.max(200, r.width); H = Math.max(300, r.height);
+      dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      S = Math.min(W / DW, H / DH); ox = (W - DW * S) / 2; oy = (H - DH * S) / 2;
+    }
+
+    // ---------- physics ----------
+    function collideSeg(b, s, extra) {
+      var ax = s[0], ay = s[1], bx = s[2], by = s[3];
+      var dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+      var t = Math.max(0, Math.min(1, ((b.x - ax) * dx + (b.y - ay) * dy) / len2));
+      var px = ax + dx * t, py = ay + dy * t, nx = b.x - px, ny = b.y - py;
+      var d = Math.sqrt(nx * nx + ny * ny), min = BALL_R + extra;
+      if (d >= min || d === 0) return;
+      nx /= d; ny /= d;
+      b.x = px + nx * min; b.y = py + ny * min;
+      var vn = b.vx * nx + b.vy * ny;
+      if (vn < 0) { b.vx -= 1.25 * vn * nx; b.vy -= 1.25 * vn * ny; b.vx *= 0.985; b.vy *= 0.985; }
+    }
+
+    function step(dt) {
+      var i, j, b, o;
+      for (i = 0; i < balls.length; i++) { b = balls[i]; b.vy += GRAV * dt; b.x += b.vx * dt; b.y += b.vy * dt; }
+      for (i = 0; i < balls.length; i++) {
+        b = balls[i];
+        for (j = i + 1; j < balls.length; j++) {
+          o = balls[j];
+          var dx = o.x - b.x, dy = o.y - b.y, d2 = dx * dx + dy * dy;
+          if (d2 > 4 * BALL_R * BALL_R || d2 === 0) continue;
+          var d = Math.sqrt(d2), push = (2 * BALL_R - d) / 2, nx = dx / d, ny = dy / d;
+          b.x -= nx * push; b.y -= ny * push; o.x += nx * push; o.y += ny * push;
+          var rel = (o.vx - b.vx) * nx + (o.vy - b.vy) * ny;
+          if (rel < 0) { b.vx += rel * nx * 0.5; b.vy += rel * ny * 0.5; o.vx -= rel * nx * 0.5; o.vy -= rel * ny * 0.5; }
+        }
+      }
+      for (i = 0; i < balls.length; i++) {
+        b = balls[i];
+        for (j = 0; j < WALLS.length; j++) collideSeg(b, WALLS[j], WALL);
+        for (j = 0; j < pins.length; j++) if (!pins[j].pulled) collideSeg(b, pins[j].seg, 4);
+        // hero as a static circle
+        var hx = b.x - HERO.x, hy = b.y - HERO.y, hd = Math.sqrt(hx * hx + hy * hy), hm = HERO.r + BALL_R;
+        if (hd < hm && hd > 0) {
+          b.x = HERO.x + hx / hd * hm; b.y = HERO.y + hy / hd * hm;
+          var vn = (b.vx * hx + b.vy * hy) / hd; if (vn < 0) { b.vx -= vn * hx / hd; b.vy -= vn * hy / hd; }
+          if (b.kind === 'lava' && phase === 'play') fail();
+        }
+        b.vx *= 0.999;
+        if (b.y > DH + 40) b.y = DH + 40;
+      }
+    }
+
+    function countGold() {
+      var n = 0;
+      for (var i = 0; i < balls.length; i++) {
+        var b = balls[i]; if (b.kind !== 'gold') continue;
+        var dx = b.x - HERO.x, dy = b.y - HERO.y;
+        if (dx * dx + dy * dy < 70 * 70 && b.y > 440) n++;
+      }
+      return n;
+    }
+
+    function fail() {
+      phase = 'fail'; phaseT = 0; fails++; track('fail');
+      burst(HERO.x, HERO.y, '#ff6a2a', 26);
+    }
+
+    function burst(x, y, c, n) {
+      for (var k = 0; k < n; k++) {
+        var a = Math.random() * 6.29, v = Math.random() * 160 + 60;
+        particles.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 80, life: 1, c: c, s: Math.random() * 3 + 2 });
+      }
+    }
+
+    // ---------- input ----------
+    function toDesign(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left - ox) / S, y: (e.clientY - r.top - oy) / S, sx: e.clientX - r.left, sy: e.clientY - r.top };
+    }
+    var ctaR = { x: 105, y: 612 - 20, w: 150, h: 40 };
+    function inR(p, R) { return p.x >= R.x && p.x <= R.x + R.w && p.y >= R.y && p.y <= R.y + R.h; }
+
+    function pull(pin) {
+      if (pin.pulled || phase !== 'play') return;
+      pin.pulled = true; track('pull_' + pin.id);
+    }
+
+    canvas.addEventListener('pointerdown', function (e) {
+      var p = toDesign(e); idle = 0;
+      if (!interacted) { interacted = true; track('first_interaction'); }
+      if (phase === 'end') { if (!openStore()) toast = { text: 'In the ad, this opens the store', life: 2.2 }; return; }
+      if (inR(p, ctaR)) { if (!openStore()) toast = { text: 'In the ad, this opens the store', life: 2.2 }; return; }
+      for (var i = 0; i < pins.length; i++) {
+        var pin = pins[i], s = pin.seg;
+        var minX = Math.min(s[0], s[2], pin.handle.x) - 12, maxX = Math.max(s[0], s[2], pin.handle.x) + 12;
+        if (p.x >= minX && p.x <= maxX && Math.abs(p.y - s[1]) < 22) { pull(pin); return; }
+      }
+    });
+
+    // ---------- drawing ----------
+    function rr(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+
+    function drawBg() {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, '#1b2a44'); g.addColorStop(1, '#0d1424');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      ctx.setTransform(dpr * S, 0, 0, dpr * S, dpr * ox, dpr * oy);
+      // stone texture blocks
+      ctx.fillStyle = 'rgba(255,255,255,0.025)';
+      for (var y = 0; y < DH; y += 40) for (var x = (y / 40) % 2 * 30; x < DH; x += 60) { rr(x, y, 56, 36, 6); ctx.fill(); }
+    }
+
+    function drawWalls() {
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#3e5677'; ctx.lineWidth = WALL * 2 + 4;
+      for (var i = 0; i < WALLS.length; i++) { var s = WALLS[i]; ctx.beginPath(); ctx.moveTo(s[0], s[1]); ctx.lineTo(s[2], s[3]); ctx.stroke(); }
+      ctx.strokeStyle = '#6f8db5'; ctx.lineWidth = WALL * 2 - 2;
+      for (i = 0; i < WALLS.length; i++) { s = WALLS[i]; ctx.beginPath(); ctx.moveTo(s[0], s[1]); ctx.lineTo(s[2], s[3]); ctx.stroke(); }
+    }
+
+    function drawPin(pin, dt) {
+      if (pin.pulled) pin.out = Math.min(1, pin.out + dt * 3.2);
+      if (pin.out >= 1) return;
+      var s = pin.seg, shift = pin.out * 220 * pin.dir;
+      ctx.save(); ctx.translate(shift, 0); ctx.globalAlpha = 1 - pin.out * 0.6;
+      var y = s[1], x0 = Math.min(s[0], pin.handle.x), x1 = Math.max(s[2], pin.handle.x);
+      var g = ctx.createLinearGradient(0, y - 5, 0, y + 5); g.addColorStop(0, '#f2f5fa'); g.addColorStop(1, '#9aa7ba');
+      ctx.fillStyle = g; rr(x0, y - 4, x1 - x0, 8, 4); ctx.fill();
+      ctx.fillStyle = '#e8b730'; ctx.strokeStyle = '#7a5a00'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(pin.handle.x, y, 12, 0, 6.29); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#7a5a00'; ctx.beginPath(); ctx.arc(pin.handle.x, y, 4, 0, 6.29); ctx.fill();
+      ctx.restore();
+    }
+
+    function drawBalls() {
+      for (var i = 0; i < balls.length; i++) {
+        var b = balls[i];
+        if (b.kind === 'lava') {
+          ctx.fillStyle = 'rgba(255,90,30,0.35)'; ctx.beginPath(); ctx.arc(b.x, b.y, BALL_R + 3, 0, 6.29); ctx.fill();
+          ctx.fillStyle = (i + Math.floor(time * 6)) % 3 ? '#ff5a1f' : '#ff8a2a';
+        } else ctx.fillStyle = '#ffcc33';
+        ctx.beginPath(); ctx.arc(b.x, b.y, BALL_R, 0, 6.29); ctx.fill();
+        ctx.fillStyle = b.kind === 'lava' ? 'rgba(255,220,120,0.6)' : 'rgba(255,255,255,0.75)';
+        ctx.beginPath(); ctx.arc(b.x - 2.2, b.y - 2.2, 2.1, 0, 6.29); ctx.fill();
+      }
+    }
+
+    function drawHero() {
+      var x = HERO.x, y = HERO.y, r = HERO.r, sad = phase === 'fail', happy = goldIn > 3;
+      var bob = Math.sin(time * 3) * 1.5;
+      ctx.fillStyle = sad ? '#d9644a' : '#ffd2a8'; ctx.strokeStyle = '#3a2410'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(x, y + bob, r, 0, 6.29); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#3a2410';
+      ctx.beginPath(); ctx.ellipse(x, y - r * 0.55 + bob, r * 0.95, r * 0.42, 0, Math.PI, 0); ctx.fill(); // hair
+      if (sad) {
+        ctx.lineWidth = 2.5;
+        [-9, 9].forEach(function (dx) {
+          ctx.beginPath(); ctx.moveTo(x + dx - 4, y - 4 + bob); ctx.lineTo(x + dx + 4, y + 4 + bob);
+          ctx.moveTo(x + dx + 4, y - 4 + bob); ctx.lineTo(x + dx - 4, y + 4 + bob); ctx.stroke();
+        });
+      } else {
+        ctx.beginPath(); ctx.arc(x - 9, y + bob, 3.2, 0, 6.29); ctx.arc(x + 9, y + bob, 3.2, 0, 6.29); ctx.fill();
+      }
+      ctx.lineWidth = 2.5; ctx.beginPath();
+      if (sad) ctx.arc(x, y + 16 + bob, 7, Math.PI * 1.15, Math.PI * 1.85);
+      else ctx.arc(x, y + 8 + bob, happy ? 9 : 6, Math.PI * 0.15, Math.PI * 0.85);
+      ctx.stroke();
+    }
+
+    function drawHand() {
+      if (phase !== 'play' || (interacted && idle < CONFIG.hintDelay)) return;
+      var pin = pins[0]; if (pin.pulled) return;
+      var k = (time % 1.6) / 1.6, x = pin.handle.x + (k < 0.2 ? 0 : Math.min(1, (k - 0.2) / 0.5) * 22), y = pin.handle.y;
+      var a = k > 0.8 ? 1 - (k - 0.8) / 0.2 : 1;
+      ctx.save(); ctx.globalAlpha = a; ctx.translate(x + 6, y + 10); ctx.rotate(-0.4);
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#17202f'; ctx.lineWidth = 2.5;
+      rr(-5, -14, 10, 24, 5); ctx.fill(); ctx.stroke();
+      rr(-11, 2, 22, 17, 7); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+
+    function text(str, x, y, size, color, weight) {
+      ctx.font = (weight || 900) + ' ' + size + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.lineWidth = Math.max(3, size * 0.16); ctx.strokeStyle = '#0d1424'; ctx.strokeText(str, x, y);
+      ctx.fillStyle = color; ctx.fillText(str, x, y);
+    }
+
+    function button(R, label, pulse) {
+      var s = 1 + (pulse ? Math.sin(time * 5) * 0.04 : 0), w = R.w * s, h = R.h * s, x = R.x - (w - R.w) / 2, y = R.y - (h - R.h) / 2;
+      ctx.fillStyle = '#1d6b00'; rr(x, y + 4, w, h, h / 2); ctx.fill();
+      var g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#8ff04a'); g.addColorStop(1, '#3fbf16');
+      ctx.fillStyle = g; rr(x, y, w, h, h / 2); ctx.fill();
+      ctx.fillStyle = '#0f3a00'; ctx.font = '900 ' + Math.round(h * 0.45) + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+    }
+
+    function drawUi() {
+      text(CONFIG.title.toUpperCase(), DW / 2, 40, 30, '#ffffff');
+      text(phase === 'fail' ? 'Oops! Try again' : CONFIG.prompt, DW / 2, 76, 17, phase === 'fail' ? '#ff8a6a' : '#ffd84d', 800);
+      // gold counter
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; rr(DW - 92, 98, 76, 26, 13); ctx.fill();
+      ctx.fillStyle = '#ffcc33'; ctx.beginPath(); ctx.arc(DW - 78, 111, 7, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.font = '800 14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(String(goldIn * 10), DW - 64, 112);
+      if (phase !== 'end') button(ctaR, 'INSTALL', false);
+    }
+
+    function drawFx(dt) {
+      for (var i = particles.length - 1; i >= 0; i--) {
+        var p = particles[i]; p.life -= dt * 1.3; if (p.life <= 0) { particles.splice(i, 1); continue; }
+        p.vy += 400 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+        ctx.globalAlpha = p.life; ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, 6.29); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawEnd() {
+      var a = Math.min(1, phaseT * 2.5);
+      ctx.fillStyle = 'rgba(6,10,20,' + (0.84 * a).toFixed(3) + ')'; ctx.fillRect(-ox / S, -oy / S, W / S, H / S);
+      ctx.globalAlpha = a;
+      ctx.save(); ctx.translate(DW / 2, 220); ctx.rotate(time * 0.4);
+      for (var k = 0; k < 12; k++) {
+        ctx.rotate(Math.PI / 6); ctx.fillStyle = 'rgba(255,204,51,0.08)';
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-22, -190); ctx.lineTo(22, -190); ctx.fill();
+      }
+      ctx.restore();
+      // treasure chest
+      var cx = DW / 2, cy = 220 + Math.sin(time * 2) * 4;
+      ctx.fillStyle = '#8a4b1c'; ctx.strokeStyle = '#3a1d06'; ctx.lineWidth = 4;
+      rr(cx - 70, cy - 10, 140, 70, 10); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - 70, cy - 10); ctx.quadraticCurveTo(cx, cy - 70, cx + 70, cy - 10); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#ffcc33'; for (k = 0; k < 9; k++) { ctx.beginPath(); ctx.arc(cx - 48 + k * 12, cy - 14 - Math.abs(4 - k) * -3, 9, 0, 6.29); ctx.fill(); }
+      ctx.fillStyle = '#e8b730'; rr(cx - 12, cy + 8, 24, 26, 4); ctx.fill(); ctx.stroke();
+      text(CONFIG.title.toUpperCase(), DW / 2, 360, 38, '#ffffff');
+      text(CONFIG.endTitle, DW / 2, 400, 17, '#ffd84d', 800);
+      button({ x: 80, y: 450, w: 200, h: 58 }, CONFIG.ctaText, true);
+      ctx.globalAlpha = 1;
+    }
+
+    function drawToast(dt) {
+      if (!toast) return; toast.life -= dt; if (toast.life <= 0) { toast = null; return; }
+      ctx.globalAlpha = Math.min(1, toast.life * 2);
+      ctx.font = '600 13px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      var w = ctx.measureText(toast.text).width + 26;
+      ctx.fillStyle = 'rgba(0,0,0,0.78)'; rr((DW - w) / 2, 548, w, 30, 15); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(toast.text, DW / 2, 563);
+      ctx.globalAlpha = 1;
+    }
+
+    var last = 0;
+    function frame(ts) {
+      var dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      time += dt; idle += dt; phaseT += dt;
+      var sub = 4; for (var i = 0; i < sub; i++) step(dt / sub);
+      goldIn = countGold();
+      if (phase === 'play' && goldIn >= 14) { phase = 'win'; phaseT = 0; track('win'); burst(HERO.x, HERO.y - 30, '#ffcc33', 40); }
+      if (phase === 'win' && phaseT > 1.4) { phase = 'end'; phaseT = 0; track('endcard'); }
+      if (phase === 'fail' && phaseT > 1.6) { if (fails >= 2) { phase = 'end'; phaseT = 0; } else { reset(); idle = CONFIG.hintDelay; } }
+      if (phase === 'play' && time > CONFIG.maxTime) { phase = 'end'; phaseT = 0; track('timeout'); }
+
+      drawBg();
+      drawWalls();
+      drawBalls();
+      for (i = 0; i < pins.length; i++) drawPin(pins[i], dt);
+      drawHero();
+      drawHand();
+      drawFx(dt);
+      drawUi();
+      if (phase === 'end') drawEnd();
+      drawToast(dt);
+      requestAnimationFrame(frame);
+    }
+
+    resize();
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(host);
+    window.addEventListener('resize', resize);
+    track('start');
+    requestAnimationFrame(frame);
+  }
+
+  function boot(host) {
+    var m = window.mraid;
+    if (m && m.getState && m.getState() === 'loading') m.addEventListener('ready', function () { mount(host); });
+    else mount(host);
+  }
+
+  window.TapframePins = { mount: boot, config: CONFIG };
+})();
+
+TapframePins.mount(document.getElementById('stage'));
+</script>
+</body>
+</html>

@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="ad.size" content="width=320,height=480">
+<title>Crystal Merge</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#0c0722}
+#stage{position:fixed;inset:0}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+window.TF_STORE_URL = "https://play.google.com/store/apps";
+/* Tapframe playable template — merge mechanic ("Crystal Merge" concept).
+   Pure Canvas 2D, no dependencies. Mount: TapframePlayable.mount(element)
+   Network hooks: Meta (FbPlayableAd), Google (ExitApi), MRAID (AppLovin, Unity, ironSource, Mintegral). */
+(function () {
+  'use strict';
+
+  var CONFIG = {
+    storeUrl: window.TF_STORE_URL || 'https://play.google.com/store/apps',
+    title: 'Crystal Merge',
+    goalText: 'Forge the Amethyst',
+    endTitle: 'Forge your first Crown',
+    ctaText: 'PLAY FREE',
+    goal: 4,          // merges until the win moment
+    maxTime: 40,      // seconds before the end card shows anyway
+    hintDelay: 3.5    // idle seconds before the hand comes back
+  };
+
+  var TIERS = [null,
+    { name: 'Pebble',   c1: '#c3cad8', c2: '#6b7489', sides: 3 },
+    { name: 'Amber',    c1: '#ffd38a', c2: '#d9761f', sides: 4 },
+    { name: 'Jade',     c1: '#93f5bd', c2: '#13915b', sides: 5 },
+    { name: 'Sapphire', c1: '#93ceff', c2: '#2156d4', sides: 6 },
+    { name: 'Amethyst', c1: '#ebb8ff', c2: '#8a2fd1', sides: 8 },
+    { name: 'Crown',    c1: '#fff3b0', c2: '#e0a800', sides: 0 }
+  ];
+
+  // Seeded so that 4 merges chain Pebble -> Amber -> Jade -> Sapphire -> Amethyst.
+  var SEED = [
+    [0, 2, 0, 3],
+    [1, 1, 2, 0],
+    [0, 3, 0, 4],
+    [2, 0, 1, 0],
+    [0, 1, 0, 0]
+  ];
+  var ROWS = SEED.length, COLS = SEED[0].length;
+
+  function track(name) { try { if (window.TF_event) window.TF_event(name); } catch (e) {} }
+
+  function openStore() {
+    track('cta');
+    try {
+      if (window.FbPlayableAd) { window.FbPlayableAd.onCTAClick(); return true; }
+      if (window.ExitApi) { window.ExitApi.exit(); return true; }
+      if (window.mraid && window.mraid.open) { window.mraid.open(CONFIG.storeUrl); return true; }
+    } catch (e) {}
+    var w = null;
+    try { w = window.open(CONFIG.storeUrl, '_blank'); } catch (e) {}
+    return !!w;
+  }
+
+  function mount(host) {
+    var canvas = document.createElement('canvas');
+    canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none';
+    host.appendChild(canvas);
+    var ctx = canvas.getContext('2d');
+
+    var W = 0, H = 0, dpr = 1, cell = 0, bx = 0, by = 0, headerY = 0, ctaRect = null, endRect = null;
+    var grid = SEED.map(function (r) { return r.slice(); });
+    var pop = SEED.map(function (r) { return r.map(function () { return 1; }); });
+    var drag = null, particles = [], floaters = [], sparkles = [];
+    var merges = 0, phase = 'play', phaseT = 0, time = 0, idle = 0, interacted = false;
+    var lastMerged = null, toast = null;
+
+    for (var i = 0; i < 26; i++) sparkles.push({ x: Math.random(), y: Math.random(), s: Math.random() * 1.6 + 0.4, p: Math.random() * 6.28 });
+
+    function resize() {
+      var r = host.getBoundingClientRect();
+      W = Math.max(200, r.width); H = Math.max(300, r.height);
+      dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      var portrait = H >= W;
+      var boardH = H * (portrait ? 0.58 : 0.66);
+      cell = Math.min((W - 32) / COLS, boardH / ROWS, 120);
+      bx = (W - cell * COLS) / 2;
+      headerY = Math.max(14, H * 0.03);
+      var top = headerY + Math.min(110, H * 0.17);
+      by = top + (boardH - cell * ROWS) / 2;
+      var bw = Math.min(260, W * 0.62), bh = Math.min(58, H * 0.085);
+      ctaRect = { x: (W - bw) / 2, y: H - bh - Math.max(16, H * 0.03), w: bw, h: bh };
+    }
+
+    // ---------- drawing helpers ----------
+    function rr(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    }
+
+    function poly(cx, cy, rad, n, rot) {
+      ctx.beginPath();
+      for (var k = 0; k < n; k++) {
+        var a = rot + k * Math.PI * 2 / n;
+        ctx[k ? 'lineTo' : 'moveTo'](cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+      }
+      ctx.closePath();
+    }
+
+    function crown(cx, cy, s) {
+      var w = s * 0.86, h = s * 0.62, x = cx - w / 2, y = cy - h / 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y + h); ctx.lineTo(x, y + h * 0.25); ctx.lineTo(x + w * 0.25, y + h * 0.55);
+      ctx.lineTo(x + w * 0.5, y); ctx.lineTo(x + w * 0.75, y + h * 0.55); ctx.lineTo(x + w, y + h * 0.25);
+      ctx.lineTo(x + w, y + h); ctx.closePath();
+    }
+
+    function gem(cx, cy, s, tier, alpha, spin) {
+      var T = TIERS[tier]; if (!T) return;
+      ctx.save(); ctx.globalAlpha = alpha == null ? 1 : alpha;
+      ctx.shadowColor = T.c2; ctx.shadowBlur = s * 0.25;
+      var g = ctx.createLinearGradient(cx - s / 2, cy - s / 2, cx + s / 2, cy + s / 2);
+      g.addColorStop(0, T.c1); g.addColorStop(1, T.c2);
+      ctx.fillStyle = g;
+      if (T.sides === 0) crown(cx, cy, s); else poly(cx, cy, s * 0.42, T.sides, -Math.PI / 2 + (spin || 0));
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = Math.max(1.5, s * 0.03); ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.stroke();
+      if (T.sides) {
+        ctx.fillStyle = 'rgba(255,255,255,0.28)';
+        poly(cx, cy, s * 0.22, T.sides, -Math.PI / 2 + (spin || 0)); ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath(); ctx.ellipse(cx - s * 0.12, cy - s * 0.16, s * 0.07, s * 0.04, -0.6, 0, 6.29); ctx.fill();
+      ctx.restore();
+    }
+
+    function badge(cx, cy, s, tier) {
+      var r = s * 0.13, x = cx + s * 0.3, y = cy + s * 0.3;
+      ctx.fillStyle = '#1b1238'; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.29); ctx.fill();
+      ctx.strokeStyle = TIERS[tier].c1; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = '800 ' + Math.round(r * 1.2) + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(tier, x, y + 1);
+    }
+
+    function hand(x, y, pressed, alpha) {
+      var r = cell * 0.17 * (pressed ? 0.88 : 1);
+      ctx.save(); ctx.globalAlpha = alpha;
+      if (pressed) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, r * 1.9, 0, 6.29); ctx.stroke();
+      }
+      ctx.translate(x + r * 0.4, y + r * 0.6); ctx.rotate(-0.45);
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#1b1238'; ctx.lineWidth = 3;
+      rr(-r * 0.45, -r * 1.2, r * 0.9, r * 2.1, r * 0.45); ctx.fill(); ctx.stroke();
+      rr(-r * 0.95, r * 0.15, r * 1.9, r * 1.5, r * 0.6); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+
+    function burst(x, y, color, n, power) {
+      for (var k = 0; k < n; k++) {
+        var a = Math.random() * 6.29, v = (Math.random() * 0.7 + 0.3) * power;
+        particles.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - power * 0.3, life: 1, c: color, s: Math.random() * 4 + 2 });
+      }
+    }
+
+    // ---------- board logic ----------
+    function cellAt(x, y) {
+      var c = Math.floor((x - bx) / cell), r = Math.floor((y - by) / cell);
+      if (r < 0 || c < 0 || r >= ROWS || c >= COLS) return null;
+      return { r: r, c: c };
+    }
+    function center(r, c) { return { x: bx + (c + 0.5) * cell, y: by + (r + 0.5) * cell }; }
+
+    function hintPair() {
+      var list = [];
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (grid[r][c]) list.push({ r: r, c: c, t: grid[r][c] });
+      if (lastMerged && grid[lastMerged.r][lastMerged.c]) {
+        var t0 = grid[lastMerged.r][lastMerged.c];
+        for (var i = 0; i < list.length; i++) {
+          var o = list[i];
+          if (o.t === t0 && (o.r !== lastMerged.r || o.c !== lastMerged.c)) return [o, lastMerged];
+        }
+      }
+      for (var a = 0; a < list.length; a++) for (var b = a + 1; b < list.length; b++)
+        if (list[a].t === list[b].t) return [list[a], list[b]];
+      return null;
+    }
+
+    function spawnPebble() {
+      var empty = [];
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) if (!grid[r][c]) empty.push({ r: r, c: c });
+      if (!empty.length) return;
+      var e = empty[Math.floor(Math.random() * empty.length)];
+      grid[e.r][e.c] = 1; pop[e.r][e.c] = 0.2;
+    }
+
+    function merge(from, to) {
+      var t = grid[to.r][to.c] + 1;
+      grid[from.r][from.c] = 0; grid[to.r][to.c] = t; pop[to.r][to.c] = 1.45;
+      var p = center(to.r, to.c);
+      burst(p.x, p.y, TIERS[t].c1, 22, cell * 0.09);
+      floaters.push({ x: p.x, y: p.y - cell * 0.3, text: '+ ' + TIERS[t].name, life: 1, c: TIERS[t].c1 });
+      lastMerged = { r: to.r, c: to.c };
+      merges++; track('merge_' + merges);
+      setTimeout(spawnPebble, 350);
+      if (merges >= CONFIG.goal && phase === 'play') {
+        phase = 'win'; phaseT = 0; track('win');
+        for (var k = 0; k < 4; k++) burst(W / 2, H * 0.4, TIERS[5 - (k % 3)].c1, 30, cell * 0.14);
+      }
+    }
+
+    // ---------- input ----------
+    function pt(e) { var r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+    function inRect(p, R) { return R && p.x >= R.x && p.x <= R.x + R.w && p.y >= R.y && p.y <= R.y + R.h; }
+
+    function cta() {
+      if (!openStore()) toast = { text: 'In the ad, this opens the store', life: 2.2 };
+    }
+
+    canvas.addEventListener('pointerdown', function (e) {
+      var p = pt(e);
+      if (!interacted) { interacted = true; track('first_interaction'); }
+      idle = 0;
+      if (phase === 'end') { cta(); return; }
+      if (inRect(p, ctaRect)) { cta(); return; }
+      if (phase !== 'play') return;
+      var c = cellAt(p.x, p.y);
+      if (c && grid[c.r][c.c]) {
+        drag = { t: grid[c.r][c.c], r: c.r, c: c.c, x: p.x, y: p.y };
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+      }
+    });
+    canvas.addEventListener('pointermove', function (e) {
+      if (!drag) return; var p = pt(e); drag.x = p.x; drag.y = p.y; idle = 0;
+    });
+    function release(e) {
+      if (!drag) return;
+      var p = pt(e), c = cellAt(p.x, p.y), d = drag; drag = null;
+      if (!c || (c.r === d.r && c.c === d.c)) return;
+      var target = grid[c.r][c.c];
+      if (target === d.t && d.t < TIERS.length - 1) merge({ r: d.r, c: d.c }, c);
+      else if (!target) { grid[c.r][c.c] = d.t; grid[d.r][d.c] = 0; pop[c.r][c.c] = 1.15; }
+    }
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', function () { drag = null; });
+
+    // ---------- frame ----------
+    function drawBackground() {
+      var g = ctx.createRadialGradient(W / 2, H * 0.38, 10, W / 2, H * 0.5, Math.max(W, H) * 0.8);
+      g.addColorStop(0, '#3a2178'); g.addColorStop(0.55, '#1d1145'); g.addColorStop(1, '#0c0722');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      for (var i = 0; i < sparkles.length; i++) {
+        var s = sparkles[i], a = 0.25 + 0.25 * Math.sin(time * 1.6 + s.p);
+        ctx.fillStyle = 'rgba(214,190,255,' + a.toFixed(3) + ')';
+        ctx.beginPath(); ctx.arc(s.x * W, ((s.y - time * 0.008) % 1 + 1) % 1 * H, s.s, 0, 6.29); ctx.fill();
+      }
+    }
+
+    function drawHeader() {
+      var f = 'system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillStyle = '#fff'; ctx.font = '900 ' + Math.round(Math.min(34, W * 0.075)) + 'px ' + f;
+      ctx.fillText(CONFIG.title.toUpperCase(), W / 2, headerY);
+      var size = Math.min(34, W * 0.075);
+      ctx.fillStyle = '#d9c8ff'; ctx.font = '700 ' + Math.round(size * 0.48) + 'px ' + f;
+      ctx.fillText(CONFIG.goalText, W / 2, headerY + size * 1.25);
+      var bw = Math.min(280, W * 0.7), bh = Math.max(10, size * 0.38), x = (W - bw) / 2, y = headerY + size * 2.05;
+      ctx.fillStyle = 'rgba(255,255,255,0.14)'; rr(x, y, bw, bh, bh / 2); ctx.fill();
+      var prog = Math.min(1, merges / CONFIG.goal);
+      if (prog > 0) {
+        var g = ctx.createLinearGradient(x, 0, x + bw, 0); g.addColorStop(0, '#93ceff'); g.addColorStop(1, '#ebb8ff');
+        ctx.fillStyle = g; rr(x, y, Math.max(bh, bw * prog), bh, bh / 2); ctx.fill();
+      }
+      gem(x + bw + bh * 1.6, y + bh / 2, bh * 3, 5, 1, time * 0.6);
+    }
+
+    function drawBoard(dt) {
+      var pad = cell * 0.06;
+      for (var r = 0; r < ROWS; r++) for (var c = 0; c < COLS; c++) {
+        var x = bx + c * cell + pad, y = by + r * cell + pad;
+        ctx.fillStyle = (r + c) % 2 ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.11)';
+        rr(x, y, cell - pad * 2, cell - pad * 2, cell * 0.16); ctx.fill();
+      }
+      var hl = drag ? cellAt(drag.x, drag.y) : null;
+      if (hl && grid[hl.r][hl.c] === drag.t && !(hl.r === drag.r && hl.c === drag.c)) {
+        ctx.strokeStyle = TIERS[drag.t].c1; ctx.lineWidth = 3;
+        rr(bx + hl.c * cell + pad, by + hl.r * cell + pad, cell - pad * 2, cell - pad * 2, cell * 0.16); ctx.stroke();
+      }
+      for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) {
+        pop[r][c] += (1 - pop[r][c]) * Math.min(1, dt * 12);
+        var t = grid[r][c]; if (!t) continue;
+        if (drag && drag.r === r && drag.c === c) continue;
+        var p = center(r, c), bob = Math.sin(time * 2.2 + r + c) * cell * 0.015;
+        gem(p.x, p.y + bob, cell * pop[r][c], t, 1, 0);
+        badge(p.x, p.y + bob, cell, t);
+      }
+      if (drag) gem(drag.x, drag.y - cell * 0.15, cell * 1.12, drag.t, 0.95, 0);
+    }
+
+    function drawHint() {
+      if (phase !== 'play' || drag || (interacted && idle < CONFIG.hintDelay)) return;
+      var pair = hintPair(); if (!pair) return;
+      var a = center(pair[0].r, pair[0].c), b = center(pair[1].r, pair[1].c);
+      var k = (time % 2) / 2, x, y, pressed = false, alpha = 1;
+      if (k < 0.15) { x = a.x; y = a.y; pressed = k > 0.07; }
+      else if (k < 0.6) { var e = (k - 0.15) / 0.45; e = e * e * (3 - 2 * e); x = a.x + (b.x - a.x) * e; y = a.y + (b.y - a.y) * e; pressed = true; }
+      else if (k < 0.75) { x = b.x; y = b.y; pressed = true; }
+      else { x = b.x; y = b.y; alpha = 1 - (k - 0.75) / 0.25; }
+      if (pressed && k >= 0.15 && k < 0.75) gem(x, y - cell * 0.15, cell * 0.9, pair[0].t, 0.45, 0);
+      hand(x + cell * 0.12, y + cell * 0.12, pressed, alpha);
+    }
+
+    function drawFx(dt) {
+      for (var i = particles.length - 1; i >= 0; i--) {
+        var p = particles[i]; p.life -= dt * 1.4;
+        if (p.life <= 0) { particles.splice(i, 1); continue; }
+        p.vy += cell * 0.25 * dt; p.x += p.vx * dt * 60; p.y += p.vy * dt * 60;
+        ctx.globalAlpha = p.life; ctx.fillStyle = p.c;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.s * p.life, 0, 6.29); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (i = floaters.length - 1; i >= 0; i--) {
+        var f = floaters[i]; f.life -= dt * 0.9; f.y -= dt * cell * 0.6;
+        if (f.life <= 0) { floaters.splice(i, 1); continue; }
+        ctx.globalAlpha = Math.min(1, f.life * 2);
+        ctx.font = '900 ' + Math.round(cell * 0.22) + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+        ctx.lineWidth = 4; ctx.strokeStyle = '#1b1238'; ctx.strokeText(f.text, f.x, f.y);
+        ctx.fillStyle = f.c; ctx.fillText(f.text, f.x, f.y);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function button(R, text, pulse) {
+      var s = 1 + (pulse ? Math.sin(time * 5) * 0.04 : 0);
+      var w = R.w * s, h = R.h * s, x = R.x - (w - R.w) / 2, y = R.y - (h - R.h) / 2;
+      ctx.fillStyle = '#7a3c00'; rr(x, y + 5, w, h, h / 2); ctx.fill();
+      var g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#ffd84d'); g.addColorStop(1, '#ff9a1f');
+      ctx.fillStyle = g; rr(x, y, w, h, h / 2); ctx.fill();
+      ctx.fillStyle = '#3d1a00'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = '900 ' + Math.round(h * 0.42) + 'px system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.fillText(text, x + w / 2, y + h / 2 + 1);
+    }
+
+    function drawEnd(dt) {
+      var a = Math.min(1, phaseT * 2.5);
+      ctx.fillStyle = 'rgba(8,4,24,' + (0.82 * a).toFixed(3) + ')'; ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = a;
+      var s = Math.min(W, H) * 0.42 * (0.85 + 0.15 * Math.min(1, phaseT * 3));
+      ctx.save(); ctx.translate(W / 2, H * 0.34);
+      ctx.rotate(time * 0.4);
+      for (var k = 0; k < 12; k++) {
+        ctx.rotate(Math.PI / 6); ctx.fillStyle = 'rgba(255,215,90,0.07)';
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-s * 0.18, -s * 1.3); ctx.lineTo(s * 0.18, -s * 1.3); ctx.fill();
+      }
+      ctx.restore();
+      gem(W / 2, H * 0.34 + Math.sin(time * 2) * 6, s, 6, a, 0);
+      var f = 'system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
+      ctx.font = '900 ' + Math.round(Math.min(40, W * 0.085)) + 'px ' + f;
+      ctx.fillText(CONFIG.title.toUpperCase(), W / 2, H * 0.58);
+      ctx.fillStyle = '#d9c8ff'; ctx.font = '700 ' + Math.round(Math.min(20, W * 0.045)) + 'px ' + f;
+      ctx.fillText(CONFIG.endTitle, W / 2, H * 0.58 + Math.min(40, W * 0.085));
+      var bw = Math.min(300, W * 0.7), bh = Math.min(66, H * 0.095);
+      endRect = { x: (W - bw) / 2, y: H * 0.74, w: bw, h: bh };
+      button(endRect, CONFIG.ctaText, true);
+      ctx.globalAlpha = 1;
+    }
+
+    function drawToast(dt) {
+      if (!toast) return; toast.life -= dt; if (toast.life <= 0) { toast = null; return; }
+      var f = '600 14px system-ui,-apple-system,Segoe UI,Roboto,sans-serif'; ctx.font = f;
+      var w = ctx.measureText(toast.text).width + 28, x = (W - w) / 2, y = H * 0.9 - 40;
+      ctx.globalAlpha = Math.min(1, toast.life * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.75)'; rr(x, y, w, 34, 17); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(toast.text, W / 2, y + 17);
+      ctx.globalAlpha = 1;
+    }
+
+    var last = 0;
+    function frame(ts) {
+      var dt = Math.min(0.05, last ? (ts - last) / 1000 : 0.016); last = ts;
+      time += dt; idle += dt; phaseT += dt;
+      if (phase === 'play' && time > CONFIG.maxTime) { phase = 'end'; phaseT = 0; track('timeout'); }
+      if (phase === 'win' && phaseT > 1.3) { phase = 'end'; phaseT = 0; track('endcard'); }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawBackground();
+      drawHeader();
+      drawBoard(dt);
+      drawHint();
+      drawFx(dt);
+      if (phase !== 'end') button(ctaRect, 'INSTALL', false);
+      if (phase === 'end') drawEnd(dt);
+      drawToast(dt);
+      requestAnimationFrame(frame);
+    }
+
+    resize();
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(host);
+    window.addEventListener('resize', resize);
+    track('start');
+    requestAnimationFrame(frame);
+  }
+
+  function boot(host) {
+    var m = window.mraid;
+    if (m && m.getState && m.getState() === 'loading') {
+      m.addEventListener('ready', function () { mount(host); });
+    } else mount(host);
+  }
+
+  window.TapframePlayable = { mount: boot, config: CONFIG };
+})();
+
+TapframePlayable.mount(document.getElementById('stage'));
+</script>
+</body>
+</html>

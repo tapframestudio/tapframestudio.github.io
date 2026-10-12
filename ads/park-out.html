@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="ad.size" content="width=320,height=480">
+<title>Park Out</title>
+<style>
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#3c9a4c}
+#stage{position:fixed;inset:0}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+window.TF_STORE_URL = "https://play.google.com/store/apps";
+/* Tapframe playable core: letterboxed 360x640 stage, loop, juice (particles, confetti, shake, floaters),
+   tutorial hand, install button, end card, network CTA hooks (Meta, Google, MRAID).
+   A game is a plain object: { title, sub, endTitle, theme, init, update, draw, down, move, up, hint, drawEnd } */
+(function () {
+  'use strict';
+  if (window.TF && window.TF.run) return;
+  var TF = window.TF = window.TF || {};
+  var DW = TF.DW = 360, DH = TF.DH = 640;
+  var FONT = 'system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif';
+  TF.FONT = FONT;
+
+  TF.track = function (name) { try { if (window.TF_event) window.TF_event(name); } catch (e) {} };
+
+  TF.openStore = function () {
+    TF.track('cta');
+    var url = window.TF_STORE_URL || 'https://play.google.com/store/apps';
+    try {
+      if (window.FbPlayableAd) { window.FbPlayableAd.onCTAClick(); return true; }
+      if (window.ExitApi) { window.ExitApi.exit(); return true; }
+      if (window.mraid && window.mraid.open) { window.mraid.open(url); return true; }
+    } catch (e) {}
+    var w = null;
+    try { w = window.open(url, '_blank'); } catch (e) {}
+    return !!w;
+  };
+
+  // ---------- drawing utilities ----------
+  TF.rr = function (ctx, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  };
+  TF.ease = function (t) { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); };
+  TF.easeOutBack = function (t) { t = Math.max(0, Math.min(1, t)); var c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+  TF.lerp = function (a, b, t) { return a + (b - a) * t; };
+  TF.shade = function (hex, amt) {
+    var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+    var t = amt < 0 ? 0 : 255, p = Math.abs(amt);
+    r = Math.round(r + (t - r) * p); g = Math.round(g + (t - g) * p); b = Math.round(b + (t - b) * p);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  };
+  TF.rgba = function (hex, a) {
+    var n = parseInt(hex.slice(1), 16);
+    return 'rgba(' + (n >> 16) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  };
+  TF.text = function (ctx, str, x, y, size, fill, o) {
+    o = o || {};
+    ctx.font = (o.weight || 900) + ' ' + size + 'px ' + FONT;
+    ctx.textAlign = o.align || 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    if (o.stroke !== false) { ctx.lineWidth = o.lw || Math.max(3, size * 0.2); ctx.strokeStyle = o.stroke || '#14102a'; ctx.strokeText(str, x, y); }
+    ctx.fillStyle = fill; ctx.fillText(str, x, y);
+  };
+  TF.shadow = function (ctx, x, y, rx, ry, a) {
+    ctx.fillStyle = 'rgba(0,0,0,' + (a == null ? 0.25 : a) + ')';
+    ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 6.2832); ctx.fill();
+  };
+  TF.gloss = function (ctx, x, y, rx, ry, a) {
+    ctx.fillStyle = 'rgba(255,255,255,' + (a == null ? 0.55 : a) + ')';
+    ctx.beginPath(); ctx.ellipse(x, y, rx, ry, -0.5, 0, 6.2832); ctx.fill();
+  };
+  TF.star = function (ctx, x, y, r, c) {
+    ctx.fillStyle = c; ctx.beginPath();
+    for (var i = 0; i < 10; i++) { var rad = i % 2 ? r * 0.45 : r, ang = -Math.PI / 2 + i * Math.PI / 5; ctx[i ? 'lineTo' : 'moveTo'](x + Math.cos(ang) * rad, y + Math.sin(ang) * rad); }
+    ctx.closePath(); ctx.fill();
+  };
+  TF.hand = function (ctx, x, y, pressed, alpha) {
+    ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y);
+    if (pressed) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, 20, 0, 6.2832); ctx.stroke();
+    }
+    var s = pressed ? 0.9 : 1;
+    ctx.translate(8, 12); ctx.rotate(-0.42); ctx.scale(s, s);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; TF.rr(ctx, -9, -10, 20, 40, 9); ctx.fill();
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#1a1530'; ctx.lineWidth = 2.6;
+    TF.rr(ctx, -6, -16, 12, 30, 6); ctx.fill(); ctx.stroke();
+    TF.rr(ctx, -13, 3, 26, 22, 9); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(26,21,48,0.35)'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(-5, 9); ctx.lineTo(-5, 16); ctx.moveTo(1, 9); ctx.lineTo(1, 16); ctx.moveTo(7, 9); ctx.lineTo(7, 16); ctx.stroke();
+    ctx.restore();
+  };
+  TF.button = function (ctx, R, label, th, pulse, time) {
+    var s = 1 + (pulse ? Math.sin(time * 5) * 0.045 : 0), w = R.w * s, h = R.h * s, x = R.x - (w - R.w) / 2, y = R.y - (h - R.h) / 2;
+    ctx.fillStyle = th.btnShadow; TF.rr(ctx, x, y + 5, w, h, h / 2); ctx.fill();
+    var g = ctx.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, th.btnTop); g.addColorStop(1, th.btnBottom);
+    ctx.fillStyle = g; TF.rr(ctx, x, y, w, h, h / 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'; TF.rr(ctx, x + h * 0.3, y + 4, w - h * 0.6, h * 0.32, h * 0.16); ctx.fill();
+    TF.text(ctx, label, x + w / 2, y + h / 2 + 1, Math.round(h * 0.42), th.btnText, { stroke: false });
+  };
+
+  // ---------- runner ----------
+  TF.run = function (host, game) {
+    var th = game.theme;
+    var canvas = document.createElement('canvas');
+    canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none';
+    host.appendChild(canvas);
+    var ctx = canvas.getContext('2d');
+    var W = 0, H = 0, dpr = 1;
+    var G = {
+      ctx: ctx, time: 0, phase: 'play', phaseT: 0, idle: 0, interacted: false, down: false,
+      sub: game.sub || '', progress: null, fails: 0, maxFails: game.maxFails || 2,
+      S: 1, ox: 0, oy: 0, particles: [], floaters: [], shakeAmt: 0, toast: null, _retry: null, _winDelay: 1.3
+    };
+    G.burst = function (x, y, colors, n, speed, confetti) {
+      for (var k = 0; k < n; k++) {
+        var a = Math.random() * 6.2832, v = (Math.random() * 0.75 + 0.25) * (speed || 180);
+        G.particles.push({ x: x, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - (confetti ? 120 : 40),
+          life: 1, decay: confetti ? 0.55 + Math.random() * 0.3 : 1.2 + Math.random() * 0.5,
+          c: colors[k % colors.length], s: confetti ? 4 + Math.random() * 4 : 2 + Math.random() * 3,
+          rot: Math.random() * 6, vr: (Math.random() - 0.5) * 12, conf: !!confetti, g: confetti ? 420 : 260 });
+      }
+    };
+    G.float = function (text, x, y, color, size) { G.floaters.push({ text: text, x: x, y: y, c: color || '#fff', s: size || 22, life: 1.2 }); };
+    G.shake = function (a) { G.shakeAmt = Math.max(G.shakeAmt, a); };
+    G.win = function (delay) {
+      if (G.phase !== 'play') return; G.phase = 'win'; G.phaseT = 0; G._winDelay = delay == null ? 1.3 : delay; TF.track('win');
+      G.burst(DW / 2, 260, th.confetti, 70, 320, true);
+    };
+    G.fail = function (retry, delay) {
+      if (G.phase !== 'play') return; G.phase = 'fail'; G.phaseT = 0; G.fails++; G._retry = retry; G._failDelay = delay || 1.5; TF.track('fail');
+    };
+    G.end = function () { if (G.phase === 'end') return; G.phase = 'end'; G.phaseT = 0; TF.track('endcard'); };
+
+    var installR = { x: 100, y: 588, w: 160, h: 42 };
+    function cta() { if (!TF.openStore()) G.toast = { text: 'In the ad, this opens the store', life: 2.2 }; }
+
+    function resize() {
+      var r = host.getBoundingClientRect();
+      W = Math.max(200, r.width); H = Math.max(300, r.height);
+      dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      G.S = Math.min(W / DW, H / DH); G.ox = (W - DW * G.S) / 2; G.oy = (H - DH * G.S) / 2;
+    }
+    function pt(e) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left - G.ox) / G.S, y: (e.clientY - r.top - G.oy) / G.S };
+    }
+    function inR(p, R) { return p.x >= R.x && p.x <= R.x + R.w && p.y >= R.y && p.y <= R.y + R.h; }
+
+    canvas.addEventListener('pointerdown', function (e) {
+      var p = pt(e); G.idle = 0;
+      if (!G.interacted) { G.interacted = true; TF.track('first_interaction'); }
+      if (G.phase === 'end') { cta(); return; }
+      if (inR(p, installR)) { cta(); return; }
+      G.down = true;
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+      if (G.phase === 'play' && game.down) game.down(G, p);
+    });
+    canvas.addEventListener('pointermove', function (e) {
+      if (!G.down) return; G.idle = 0;
+      if (G.phase === 'play' && game.move) game.move(G, pt(e));
+    });
+    function up(e) {
+      if (!G.down) return; G.down = false;
+      if (G.phase === 'play' && game.up) game.up(G, pt(e));
+    }
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+
+    function drawFx(dt) {
+      for (var i = G.particles.length - 1; i >= 0; i--) {
+        var p = G.particles[i]; p.life -= dt * p.decay;
+        if (p.life <= 0) { G.particles.splice(i, 1); continue; }
+        p.vy += p.g * dt; p.vx *= 0.985; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+        ctx.globalAlpha = Math.min(1, p.life * 1.6); ctx.fillStyle = p.c;
+        if (p.conf) {
+          ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.scale(1, Math.abs(Math.cos(p.rot * 1.3)) + 0.2);
+          ctx.fillRect(-p.s / 2, -p.s * 0.35, p.s, p.s * 0.7); ctx.restore();
+        } else { ctx.beginPath(); ctx.arc(p.x, p.y, p.s * (0.4 + p.life * 0.6), 0, 6.2832); ctx.fill(); }
+      }
+      ctx.globalAlpha = 1;
+      for (i = G.floaters.length - 1; i >= 0; i--) {
+        var f = G.floaters[i]; f.life -= dt; f.y -= dt * 38;
+        if (f.life <= 0) { G.floaters.splice(i, 1); continue; }
+        var pop = TF.easeOutBack(Math.min(1, (1.2 - f.life) * 5));
+        ctx.globalAlpha = Math.min(1, f.life * 2.5);
+        TF.text(ctx, f.text, f.x, f.y, Math.round(f.s * pop), f.c);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawHeader() {
+      ctx.fillStyle = th.header; ctx.fillRect(-G.ox / G.S - 2, 0, W / G.S + 4, 104);
+      ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(-G.ox / G.S - 2, 103, W / G.S + 4, 2);
+      TF.text(ctx, game.title.toUpperCase(), DW / 2, 34, 28, '#ffffff', { lw: 6 });
+      TF.text(ctx, G.sub, DW / 2, 68, 16, th.accent, { weight: 800, lw: 5 });
+      if (G.progress != null) {
+        var bw = 170, x = (DW - bw) / 2, y = 86;
+        ctx.fillStyle = 'rgba(0,0,0,0.35)'; TF.rr(ctx, x, y, bw, 9, 4.5); ctx.fill();
+        var p = Math.max(0, Math.min(1, G.progress));
+        if (p > 0) { ctx.fillStyle = th.accent; TF.rr(ctx, x, y, Math.max(9, bw * p), 9, 4.5); ctx.fill(); }
+      }
+    }
+
+    function drawHint() {
+      if (G.phase !== 'play' || G.down || !game.hint) return;
+      if (G.interacted && G.idle < (game.hintDelay || 3)) return;
+      var h = game.hint(G); if (!h) return;
+      var k = (G.time % 1.8) / 1.8;
+      if (h.type === 'tap') {
+        var pressed = (k % 0.5) > 0.25;
+        TF.hand(ctx, h.x, h.y, pressed, 1);
+      } else {
+        var x, y, pr = false, a = 1;
+        if (k < 0.15) { x = h.x1; y = h.y1; pr = k > 0.07; }
+        else if (k < 0.65) { var e = TF.ease((k - 0.15) / 0.5); x = TF.lerp(h.x1, h.x2, e); y = TF.lerp(h.y1, h.y2, e); pr = true; }
+        else { x = h.x2; y = h.y2; a = 1 - (k - 0.65) / 0.35; }
+        TF.hand(ctx, x, y, pr, a);
+      }
+    }
+
+    function drawEnd() {
+      var a = Math.min(1, G.phaseT * 2.6), cx = DW / 2, cy = 222;
+      ctx.fillStyle = th.endBg.replace('A', (0.88 * a).toFixed(3)); ctx.fillRect(-G.ox / G.S - 2, -G.oy / G.S - 2, W / G.S + 4, H / G.S + 4);
+      ctx.globalAlpha = a;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(G.time * 0.35);
+      for (var k = 0; k < 14; k++) {
+        ctx.rotate(Math.PI / 7); ctx.fillStyle = th.ray;
+        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-24, -230); ctx.lineTo(24, -230); ctx.fill();
+      }
+      ctx.restore();
+      var g = ctx.createRadialGradient(cx, cy, 10, cx, cy, 130); g.addColorStop(0, th.glow); g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g; ctx.fillRect(cx - 140, cy - 140, 280, 280);
+      var pop = TF.easeOutBack(Math.min(1, G.phaseT * 2.2));
+      ctx.save(); ctx.translate(cx, cy + Math.sin(G.time * 2) * 5); ctx.scale(pop, pop);
+      if (game.drawEnd) game.drawEnd(G, ctx); ctx.restore();
+      TF.text(ctx, game.title.toUpperCase(), cx, 372, 40, '#ffffff', { lw: 8 });
+      TF.text(ctx, game.endTitle, cx, 414, 18, th.accent, { weight: 800, lw: 5 });
+      // star rating strip
+      for (k = 0; k < 5; k++) star(cx - 56 + k * 28, 448, 10, '#ffd34d');
+      TF.button(ctx, { x: 75, y: 478, w: 210, h: 62 }, game.cta || 'PLAY FREE', th, true, G.time);
+      ctx.globalAlpha = 1;
+    }
+    function star(x, y, r, c) { TF.star(ctx, x, y, r, c); }
+
+    function drawToast(dt) {
+      if (!G.toast) return; G.toast.life -= dt; if (G.toast.life <= 0) { G.toast = null; return; }
+      ctx.globalAlpha = Math.min(1, G.toast.life * 2);
+      ctx.font = '600 13px ' + FONT; var w = ctx.measureText(G.toast.text).width + 28;
+      ctx.fillStyle = 'rgba(0,0,0,0.8)'; TF.rr(ctx, (DW - w) / 2, 548, w, 30, 15); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(G.toast.text, DW / 2, 563);
+      ctx.globalAlpha = 1;
+    }
+
+    var last = 0;
+    function frame(ts) {
+      var dt = Math.min(0.033, last ? (ts - last) / 1000 : 0.016); last = ts;
+      G.time += dt; G.idle += dt; G.phaseT += dt;
+      if (game.update) game.update(G, dt);
+      if (G.phase === 'win' && G.phaseT > G._winDelay) G.end();
+      if (G.phase === 'fail' && G.phaseT > G._failDelay) {
+        if (G.fails >= G.maxFails) G.end();
+        else { G.phase = 'play'; G.phaseT = 0; if (G._retry) G._retry(); G.idle = 99; }
+      }
+      if (G.phase === 'play' && G.time > (game.maxTime || 45)) G.end();
+      G.shakeAmt = Math.max(0, G.shakeAmt - dt * 30);
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, th.bg1); bg.addColorStop(1, th.bg2);
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+      var sx = (Math.random() - 0.5) * G.shakeAmt, sy = (Math.random() - 0.5) * G.shakeAmt;
+      ctx.setTransform(dpr * G.S, 0, 0, dpr * G.S, dpr * (G.ox + sx * G.S), dpr * (G.oy + sy * G.S));
+      if (game.draw) game.draw(G, ctx, dt);
+      drawFx(dt);
+      drawHeader();
+      if (G.phase !== 'end') TF.button(ctx, installR, 'INSTALL', th, false, G.time);
+      drawHint();
+      if (G.phase === 'end') drawEnd();
+      drawToast(dt);
+      requestAnimationFrame(frame);
+    }
+
+    if (window.TF_DEBUG) window.TF_DEBUG[game.id || 'game'] = { G: G, game: game };
+    resize();
+    if (window.ResizeObserver) new ResizeObserver(resize).observe(host);
+    window.addEventListener('resize', resize);
+    if (game.init) game.init(G);
+    TF.track('start');
+    requestAnimationFrame(frame);
+  };
+
+  TF.boot = function (host, makeGame) {
+    var go = function () { TF.run(host, makeGame()); };
+    var m = window.mraid;
+    if (m && m.getState && m.getState() === 'loading') m.addEventListener('ready', go); else go();
+  };
+})();
+
+/* Parking Jam concept: tap a car, it drives the way its arrow points. Blocked cars bump and bounce back. */
+(function () {
+  'use strict';
+  var TF = window.TF;
+  var COLS = 6, ROWS = 7, CELL = 46, X0 = (TF.DW - COLS * 46) / 2, Y0 = 168;
+  var COLORS = ['#ff4d5a', '#3f8cff', '#ffc531', '#2fd08a', '#b06bff', '#ff8a3d', '#22c4d8', '#ff6fb5', '#8fd14f'];
+  // c, r, len, horizontal, dir(+1 right/down, -1 left/up)
+  var LAYOUT = [
+    [0, 0, 2, true, -1], [3, 0, 2, false, -1], [4, 1, 2, true, 1], [0, 1, 2, false, 1],
+    [1, 2, 2, true, -1], [5, 2, 3, false, -1], [0, 5, 2, true, 1], [3, 4, 2, false, 1], [2, 6, 3, true, -1]
+  ];
+  var ORDER = [8, 7, 6, 3, 4, 2, 5, 0, 1];
+
+  function make() {
+    var cars;
+    function reset() {
+      cars = LAYOUT.map(function (a, i) {
+        return { i: i, c: a[0], r: a[1], len: a[2], h: a[3], dir: a[4], color: COLORS[i], state: 'park', off: 0, v: 0, target: 0, flash: 0, wob: 0 };
+      });
+    }
+
+    function cellsOf(car) {
+      var out = [];
+      for (var k = 0; k < car.len; k++) out.push(car.h ? [car.c + k, car.r] : [car.c, car.r + k]);
+      return out;
+    }
+    function occupant(c, r, except) {
+      for (var i = 0; i < cars.length; i++) {
+        var car = cars[i]; if (car === except || car.state === 'drive' || car.state === 'gone') continue;
+        var cs = cellsOf(car);
+        for (var k = 0; k < cs.length; k++) if (cs[k][0] === c && cs[k][1] === r) return car;
+      }
+      return null;
+    }
+    // number of free cells ahead before a blocker, or -1 if the road is clear to the edge
+    function pathAhead(car) {
+      var c, r, n = 0;
+      if (car.h) { c = car.dir > 0 ? car.c + car.len : car.c - 1; r = car.r; }
+      else { c = car.c; r = car.dir > 0 ? car.r + car.len : car.r - 1; }
+      while (c >= 0 && c < COLS && r >= 0 && r < ROWS) {
+        var o = occupant(c, r, car); if (o) return { free: n, blocker: o };
+        n++; if (car.h) c += car.dir; else r += car.dir;
+      }
+      return null;
+    }
+    function rectOf(car) {
+      return { x: X0 + car.c * CELL, y: Y0 + car.r * CELL, w: car.h ? car.len * CELL : CELL, h: car.h ? CELL : car.len * CELL };
+    }
+
+    var cleared = 0;
+
+    function drawCar(ctx, car, G) {
+      var R = rectOf(car), cx = R.x + R.w / 2, cy = R.y + R.h / 2;
+      if (car.h) cx += car.off * car.dir; else cy += car.off * car.dir;
+      var ang = car.h ? (car.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (car.dir > 0 ? Math.PI : 0);
+      var w = CELL - 10, L = car.len * CELL - 10;
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(ang);
+      if (car.wob) ctx.rotate(Math.sin(G.time * 50) * 0.05 * car.wob);
+      TF.shadow(ctx, 3, 4, w * 0.56, L * 0.53, 0.28);
+      // wheels
+      ctx.fillStyle = '#1d1d24';
+      [-1, 1].forEach(function (sx) { [-1, 1].forEach(function (sy) { TF.rr(ctx, sx * w / 2 - (sx > 0 ? 3 : 4), sy * L * 0.3 - 6, 7, 12, 3); ctx.fill(); }); });
+      // body
+      var g = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+      g.addColorStop(0, TF.shade(car.color, -0.18)); g.addColorStop(0.45, TF.shade(car.color, 0.12)); g.addColorStop(1, TF.shade(car.color, -0.28));
+      ctx.fillStyle = g; TF.rr(ctx, -w / 2, -L / 2, w, L, 10); ctx.fill();
+      ctx.strokeStyle = TF.shade(car.color, -0.45); ctx.lineWidth = 1.5; ctx.stroke();
+      // windshield (front = top in local space) and rear window
+      var wg = ctx.createLinearGradient(0, -L / 2, 0, -L / 2 + 18);
+      wg.addColorStop(0, '#d6f1ff'); wg.addColorStop(1, '#5f9fc9');
+      ctx.fillStyle = wg; TF.rr(ctx, -w / 2 + 5, -L / 2 + 9, w - 10, 13, 4); ctx.fill();
+      ctx.fillStyle = '#4d7fa3'; TF.rr(ctx, -w / 2 + 6, L / 2 - 17, w - 12, 9, 3); ctx.fill();
+      // roof
+      ctx.fillStyle = TF.shade(car.color, 0.22); TF.rr(ctx, -w / 2 + 6, -L / 2 + 24, w - 12, L - 43, 6); ctx.fill();
+      // lights
+      ctx.fillStyle = '#fff6b0'; ctx.beginPath(); ctx.arc(-w / 2 + 6, -L / 2 + 4, 3, 0, 6.29); ctx.arc(w / 2 - 6, -L / 2 + 4, 3, 0, 6.29); ctx.fill();
+      ctx.fillStyle = '#ff3b3b'; TF.rr(ctx, -w / 2 + 3, L / 2 - 4, 7, 3, 1.5); ctx.fill(); TF.rr(ctx, w / 2 - 10, L / 2 - 4, 7, 3, 1.5); ctx.fill();
+      // direction arrow on roof
+      ctx.fillStyle = 'rgba(255,255,255,0.95)'; ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 1.5;
+      var ay = (L > 60 ? -6 : -2);
+      ctx.beginPath(); ctx.moveTo(0, ay - 9); ctx.lineTo(9, ay + 2); ctx.lineTo(3.5, ay + 2); ctx.lineTo(3.5, ay + 10);
+      ctx.lineTo(-3.5, ay + 10); ctx.lineTo(-3.5, ay + 2); ctx.lineTo(-9, ay + 2); ctx.closePath(); ctx.fill(); ctx.stroke();
+      TF.gloss(ctx, -w * 0.18, -L * 0.18, 3, L * 0.16, 0.35);
+      if (car.flash > 0) { ctx.fillStyle = 'rgba(255,60,60,' + (car.flash * 0.5).toFixed(2) + ')'; TF.rr(ctx, -w / 2, -L / 2, w, L, 10); ctx.fill(); }
+      ctx.restore();
+    }
+
+    return {
+      id: 'parking', title: 'Park Out', sub: 'Tap a car to drive it out', endTitle: 'Clear every parking lot!',
+      maxTime: 50, hintDelay: 2.5,
+      theme: { bg1: '#7fd36e', bg2: '#3c9a4c', header: 'rgba(16,48,28,0.62)', accent: '#ffe14d',
+        btnTop: '#ffb43d', btnBottom: '#ff7a14', btnShadow: '#9a3d00', btnText: '#ffffff',
+        endBg: 'rgba(10,30,18,A)', ray: 'rgba(255,225,77,0.08)', glow: 'rgba(255,225,77,0.35)',
+        confetti: ['#ff4d5a', '#3f8cff', '#ffc531', '#2fd08a', '#ffffff'] },
+      init: function (G) { reset(); G.progress = 0; },
+      down: function (G, p) {
+        var c = Math.floor((p.x - X0) / CELL), r = Math.floor((p.y - Y0) / CELL);
+        var car = occupant(c, r, null);
+        if (!car || car.state !== 'park') return;
+        var path = pathAhead(car);
+        if (!path) { car.state = 'drive'; car.v = 120; TF.track('car_out'); }
+        else {
+          car.state = 'bump'; car.target = path.free * CELL + 6; car.v = 520; car.blocker = path.blocker;
+        }
+      },
+      hint: function () {
+        for (var k = 0; k < ORDER.length; k++) {
+          var car = cars[ORDER[k]]; if (car.state !== 'park') continue;
+          if (!pathAhead(car)) { var R = rectOf(car); return { type: 'tap', x: R.x + R.w / 2, y: R.y + R.h / 2 }; }
+        }
+        return null;
+      },
+      update: function (G, dt) {
+        var left = 0;
+        for (var i = 0; i < cars.length; i++) {
+          var car = cars[i];
+          car.flash = Math.max(0, car.flash - dt * 3); car.wob = Math.max(0, car.wob - dt * 4);
+          if (car.state === 'drive') {
+            car.v = Math.min(900, car.v + 1800 * dt); car.off += car.v * dt;
+            if (Math.random() < dt * 30) {
+              var R = rectOf(car), bx = R.x + R.w / 2 + (car.h ? car.off * car.dir - car.dir * R.w / 2 : 0), by = R.y + R.h / 2 + (car.h ? 0 : car.off * car.dir - car.dir * R.h / 2);
+              G.particles.push({ x: bx, y: by, vx: -car.dir * (car.h ? 40 : 0), vy: -car.dir * (car.h ? 0 : 40), life: 1, decay: 2, c: 'rgba(240,240,240,0.7)', s: 5, rot: 0, vr: 0, conf: false, g: -30 });
+            }
+            if (car.off > 460) {
+              car.state = 'gone'; cleared++;
+              G.float('+1', TF.DW / 2, 140, '#ffe14d', 24);
+            }
+          } else if (car.state === 'bump') {
+            if (car.target > 0 && car.off < car.target) { car.off = Math.min(car.target, car.off + car.v * dt); }
+            else if (car.target > 0) {
+              car.target = 0; car.flash = 1; car.blocker.wob = 1; car.blocker.flash = 0.6; G.shake(6);
+              var Rb = rectOf(car.blocker); G.burst(Rb.x + Rb.w / 2, Rb.y + Rb.h / 2, ['#ffffff', '#ffd34d'], 10, 140);
+              G.float('Blocked!', Rb.x + Rb.w / 2, Rb.y - 6, '#ff6b6b', 18);
+            } else { car.off = Math.max(0, car.off - 380 * dt); if (car.off === 0) car.state = 'park'; }
+          }
+          if (car.state !== 'gone') left++;
+        }
+        G.sub = left ? 'Cars left: ' + left : 'Lot cleared!';
+        G.progress = cleared / cars.length;
+        if (cleared === cars.length) G.win(1.2);
+      },
+      draw: function (G, ctx) {
+        // grass texture
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        for (var y = 110; y < 640; y += 26) for (var x = ((y / 26) % 2) * 13; x < 360; x += 26) { ctx.beginPath(); ctx.arc(x, y, 2, 0, 6.29); ctx.fill(); }
+        // curb + asphalt lot
+        var bx = X0 - 14, by = Y0 - 14, bw = COLS * CELL + 28, bh = ROWS * CELL + 28;
+        TF.shadow(ctx, bx + bw / 2 + 4, by + bh / 2 + 8, bw * 0.52, bh * 0.52, 0.18);
+        ctx.fillStyle = '#d9dde3'; TF.rr(ctx, bx, by, bw, bh, 18); ctx.fill();
+        var ag = ctx.createLinearGradient(0, Y0, 0, Y0 + ROWS * CELL); ag.addColorStop(0, '#4a4f5c'); ag.addColorStop(1, '#3a3e49');
+        ctx.fillStyle = ag; TF.rr(ctx, X0 - 6, Y0 - 6, COLS * CELL + 12, ROWS * CELL + 12, 12); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 2; ctx.setLineDash([8, 7]);
+        for (var c = 1; c < COLS; c++) { ctx.beginPath(); ctx.moveTo(X0 + c * CELL, Y0 + 4); ctx.lineTo(X0 + c * CELL, Y0 + ROWS * CELL - 4); ctx.stroke(); }
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255,255,255,0.05)';
+        for (var r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) if ((r + c) % 2) ctx.fillRect(X0 + c * CELL, Y0 + r * CELL, CELL, CELL);
+        // exits: yellow chevrons on the edges
+        ctx.fillStyle = 'rgba(255,225,77,0.85)';
+        [[X0 + COLS * CELL / 2, by + 5, 0], [X0 + COLS * CELL / 2, by + bh - 5, Math.PI], [bx + 5, Y0 + ROWS * CELL / 2, -Math.PI / 2], [bx + bw - 5, Y0 + ROWS * CELL / 2, Math.PI / 2]].forEach(function (e) {
+          ctx.save(); ctx.translate(e[0], e[1]); ctx.rotate(e[2]); ctx.beginPath(); ctx.moveTo(0, -5); ctx.lineTo(7, 3); ctx.lineTo(-7, 3); ctx.closePath(); ctx.fill(); ctx.restore();
+        });
+        ctx.save(); ctx.beginPath(); ctx.rect(-200, 104, 760, 480); ctx.clip();
+        var order = cars.slice().sort(function (a, b) { return (a.state === 'drive') - (b.state === 'drive'); });
+        for (var i = 0; i < order.length; i++) if (order[i].state !== 'gone') drawCar(ctx, order[i], G);
+        ctx.restore();
+      },
+      drawEnd: function (G, ctx) {
+        var hero = { c: 0, r: 0, len: 2, h: false, dir: -1, color: '#ff4d5a', off: 0, flash: 0, wob: 0 };
+        ctx.scale(2.2, 2.2); ctx.translate(-CELL / 2 - X0, -CELL - Y0);
+        drawCar(ctx, hero, G);
+      }
+    };
+  }
+
+  window.TapframeParking = { mount: function (host) { TF.boot(host, make); } };
+})();
+
+TapframeParking.mount(document.getElementById('stage'));
+</script>
+</body>
+</html>
