@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Andrii Zadoianov — CV</title><meta name="description" content="CV of Andrii Zadoianov, playable ads developer (Unity & HTML5).">
+<style>
+@page { size: A4; margin: 0; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background:#fff; color: #1b1f2a; font-size: 9.6pt; line-height: 1.42; }
+.page { width: 210mm; min-height: 297mm; padding: 15mm 16mm 12mm; }
+header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #1b1f2a; padding-bottom: 8px; }
+h1 { margin: 0; font-size: 22pt; letter-spacing: -0.3px; }
+.role { font-size: 11pt; color: #b5541c; font-weight: bold; margin-top: 2px; }
+.contact { text-align: right; font-size: 8.8pt; color: #333; }
+.contact a { color: #333; text-decoration: none; }
+h2 { font-size: 9.5pt; text-transform: uppercase; letter-spacing: 1.2px; color: #b5541c; margin: 13px 0 5px; }
+p { margin: 0 0 4px; }
+.job { margin-bottom: 8px; }
+.jh { display: flex; justify-content: space-between; font-weight: bold; }
+.jh span:last-child { font-weight: normal; color: #555; white-space: nowrap; }
+.org { color: #444; font-style: italic; margin-bottom: 2px; }
+ul { margin: 2px 0 0 16px; padding: 0; }
+li { margin-bottom: 1.5px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+.skills b { color: #1b1f2a; }
+.link { color: #b5541c; font-weight: bold; text-decoration: none; }
+
+@media screen { body { background:#eef0f4; } .page { margin: 24px auto; background:#fff; box-shadow: 0 6px 30px rgba(0,0,0,.08); } }
+@media screen and (max-width: 820px) {
+  .page { width:auto; min-height:0; margin:0; padding:20px 16px; font-size:15px; box-shadow:none; }
+  header { flex-direction:column; align-items:flex-start; gap:8px; }
+  .contact { text-align:left; font-size:14px; }
+  h2 { font-size:13px; }
+  .jh { flex-direction:column; }
+  .grid { grid-template-columns:1fr; }
+}
+@media print { .page { margin:0; box-shadow:none; } body { background:#fff; } }
+</style></head>
+<body><div class="page">
+<header>
+  <div>
+    <h1>Andrii Zadoianov</h1>
+    <div class="role">Playable Ads Developer · Unity &amp; HTML5</div>
+  </div>
+  <div class="contact">
+    Brussels, Belgium · open to remote<br>
+    zadoianov2003@gmail.com<br>
+    <a href="https://www.linkedin.com/in/andrii-zadoianov/">linkedin.com/in/andrii-zadoianov</a><br>
+    Portfolio: <a href="https://tapframestudio.github.io">tapframestudio.github.io</a>
+  </div>
+</header>
+
+<h2>Summary</h2>
+<p>Game developer working in Unity since 2021, now focused on playable ads for mobile games. I build short interactive HTML5 creatives from a game's core loop: tutorial hand, fail state, end card and store CTA, packaged as a single file per ad network. I taught programming for three years, so I explain technical decisions clearly and ship fast.</p>
+
+<h2>Experience</h2>
+<div class="job">
+  <div class="jh"><span>Co-founder &amp; Playable Ads Developer — Tapframe</span><span>Oct 2026 – present</span></div>
+  <div class="org">Playable ads studio, remote</div>
+  <ul>
+    <li>Built 8 concept playables in the genres that spend most on UA: parking jam, water sort, crowd runner, match-3, bubble shooter, top-down survival, pull-the-pin and merge. All playable at <a class="link" href="https://tapframestudio.github.io">tapframestudio.github.io</a>.</li>
+    <li>Each ad is one self-contained HTML5 file under 30 KB (Canvas 2D, vanilla JavaScript), letterboxed for portrait screens, with CTA hooks for AppLovin, Unity Ads, ironSource, Meta and Google (MRAID / network exit APIs).</li>
+    <li>Wrote a shared engine for particles, screen shake, confetti, tutorial hand and end cards, plus a build script that packs each game into network-ready files.</li>
+    <li>Automated QA: headless browser tests play every ad through to the end card by following its own hint logic, catching runtime errors before delivery.</li>
+  </ul>
+</div>
+<div class="job">
+  <div class="jh"><span>Founder — Ctrl Learn</span><span>2026 – present</span></div>
+  <div class="org">IT school, ctrllearn.com.ua</div>
+  <ul><li>Run a programming school: course design, teaching and operations.</li></ul>
+</div>
+<div class="job">
+  <div class="jh"><span>Programming Instructor — Kvanta STEM School</span><span>2021 – 2024</span></div>
+  <div class="org">kvanta.xyz</div>
+  <ul><li>Taught programming to students in grades 5–10 at a STEM school with programming, math and physics courses.</li></ul>
+</div>
+<div class="job">
+  <div class="jh"><span>Unity Game Developer — independent projects &amp; game jams</span><span>2021 – present</span></div>
+  <ul><li>Gameplay programming in C#: character controllers, game systems, UI and prototyping under game-jam deadlines.</li></ul>
+</div>
+
+<h2>Skills</h2>
+<div class="grid skills">
+  <p><b>Playables:</b> HTML5 Canvas, JavaScript, single-file builds, size optimisation, MRAID / network CTA hooks</p>
+  <p><b>Game dev:</b> Unity, C#, gameplay systems, game feel (juice, feedback, tutorials)</p>
+  <p><b>Ad networks:</b> AppLovin, Unity Ads, ironSource, Meta, Google</p>
+  <p><b>Tools:</b> Git, headless browser testing, build scripting</p>
+</div>
+
+<h2>Education</h2>
+<div class="grid">
+  <p><b>KU Leuven</b>, Business Administration · 2023 – 2025</p>
+  <p><b>Taras Shevchenko National University of Kyiv</b>, Software Engineering · 2021 – 2023</p>
+  <p><b>University of L'Aquila</b>, Italy · exchange, 2022</p>
+  <p><b>New York Private University</b>, USA · exchange, 2022</p>
+</div>
+
+<h2>Languages</h2>
+<p>Ukrainian, Russian — native · English — professional (IELTS 6.5) · Italian — A2</p>
+</div></body></html>
